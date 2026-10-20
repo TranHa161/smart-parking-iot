@@ -1,0 +1,11 @@
+.env
+mosquitto/passwd
+certbot/
+logs/
+.deploy.lock
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+dist/
+.angular/

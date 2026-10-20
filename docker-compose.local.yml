@@ -1,0 +1,45 @@
+# Dùng trên MÁY CÁ NHÂN để dev:
+#   docker compose -f docker-compose.local.yml up -d
+# Chỉ dựng Postgres, Redis, Mosquitto; bạn chạy backend/frontend trực tiếp trên máy.
+# Mọi cổng chỉ bind 127.0.0.1 nên không ảnh hưởng/ không bị lộ ra mạng.
+name: smart-parking-local
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-parking}
+      POSTGRES_USER: ${POSTGRES_USER:-parking}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-parking_dev}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata_local:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.local.conf:/mosquitto/config/mosquitto.conf:ro
+
+volumes:
+  pgdata_local:

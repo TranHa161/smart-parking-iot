@@ -1,4 +1,4 @@
-# Smart Parking IoT — Hạ tầng & triển khai
+# Smart Parking IoT
 
 Stack: Python (backend) · Angular (frontend) · PostgreSQL 16 · Redis 7 · Mosquitto 2 (MQTT) · Nginx + Let's Encrypt · DuckDNS · AWS EC2 (Ubuntu 24.04).
 
@@ -41,7 +41,7 @@ cd ../frontend && npm ci && npx ng serve --proxy-config proxy.conf.json
 Test MQTT local: `docker compose -f docker-compose.local.yml exec mosquitto mosquitto_pub -t test -m hello`.
 Tắt: `docker compose -f docker-compose.local.yml down` (thêm `-v` để xoá dữ liệu).
 
-## B. Trưởng nhóm: thiết lập server lần đầu
+## B. Thiết lập server lần đầu
 
 ### B1. AWS EC2
 - Instance **t3.micro** (hoặc t2.micro), Ubuntu 24.04 LTS, ổ gp3 **30 GB**, tạo/gán key pair.
@@ -77,8 +77,6 @@ Repo → Settings → Secrets and variables → Actions → New repository secre
 | `EC2_SSH_KEY` | nội dung private key (PEM/OpenSSH) dùng để SSH vào EC2 |
 | `EC2_APP_DIR` | (tuỳ chọn) mặc định `/home/ubuntu/smart-parking` |
 
-Khuyến nghị: bật **Branch protection** cho `main` (bắt buộc PR + ít nhất 1 review).
-Workflow `.github/workflows/deploy.yml` chạy khi PR được merge vào `main`; có thể bấm chạy tay ở tab Actions (`workflow_dispatch`).
 
 ## C. Vận hành
 ```bash
@@ -90,10 +88,3 @@ free -h && docker stats --no-stream    # kiểm tra RAM
 ```
 Thiết bị kết nối MQTT: host `<DOMAIN>`, cổng `1883`, user/password trong `.env` (`MQTT_USER`, `MQTT_PASSWORD`).
 Test: `mosquitto_pub -h <DOMAIN> -p 1883 -u parking_gw -P '<mật khẩu>' -t test -m hi`.
-
-## D. Lưu ý với t3.micro (1 GB RAM)
-- Tổng giới hạn RAM các container ≈ 620 MB; swap 4 GB chỉ là lưới an toàn, đừng dựa vào nó khi chạy thường xuyên.
-- Build Angular trên server chậm (vài phút). Nếu build bị `Killed` (OOM): tăng giới hạn `--max-old-space-size`, hoặc build image trong GitHub Actions rồi đẩy lên GHCR để server chỉ `pull`.
-- MQTT cổng 1883 là **không mã hoá** (đã có user/password). Khi cần bảo mật hơn hãy thêm listener TLS 8883 dùng chứng chỉ Let's Encrypt.
-- Deploy lỗi: container cũ vẫn chạy cho tới khi build xong; nếu backend mới không healthy, `deploy.sh` báo lỗi và in log. Cách xử lý đúng quy trình: sửa lỗi bằng PR mới (hoặc `git revert` commit lỗi rồi merge PR revert), CI sẽ tự deploy lại. Khẩn cấp có thể trên server: `git checkout <commit-cũ> && docker compose up -d --build` (xong nhớ `git checkout main` lại).
-- Gia hạn SSL tạm dừng Nginx ~20–30 giây (chỉ khi chứng chỉ còn dưới 30 ngày).

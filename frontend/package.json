@@ -1,0 +1,8 @@
+{
+  "name": "smart-parking-frontend",
+  "version": "1.0.0",
+  "scripts": {
+    "build": "mkdir -p dist/frontend/browser && echo '<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Smart Parking</title><style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f0f2f5;}.card{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1);text-align:center;}</style></head><body><div class=\"card\"><h1>Smart Parking IoT System</h1><p>Môi trường Staging/Production đã sẵn sàng đón code từ nhóm!</p></div></body></html>' > dist/frontend/browser/index.html"
+  },
+  "dependencies": {}
+}

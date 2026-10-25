@@ -59,31 +59,33 @@ void Console_IRQHandler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define RFID_CS_Pin GPIO_PIN_4
-#define RFID_CS_GPIO_Port GPIOA
-#define RFID_RST_Pin GPIO_PIN_0
-#define RFID_RST_GPIO_Port GPIOB
-#define TRIG1_Pin GPIO_PIN_8
-#define TRIG1_GPIO_Port GPIOA
-#define ECHO1_Pin GPIO_PIN_1
-#define ECHO1_GPIO_Port GPIOA
-#define TRIG2_Pin GPIO_PIN_10
-#define TRIG2_GPIO_Port GPIOB
-#define ECHO2_Pin GPIO_PIN_12
-#define ECHO2_GPIO_Port GPIOB
-#define TRIG3_Pin GPIO_PIN_13
-#define TRIG3_GPIO_Port GPIOB
-#define ECHO3_Pin GPIO_PIN_14
-#define ECHO3_GPIO_Port GPIOB
+#define USER_BUTTON_Pin GPIO_PIN_13
+#define USER_BUTTON_GPIO_Port GPIOC
 #define LED1_Pin GPIO_PIN_0
 #define LED1_GPIO_Port GPIOC
 #define LED2_Pin GPIO_PIN_1
 #define LED2_GPIO_Port GPIOC
 #define LED3_Pin GPIO_PIN_2
 #define LED3_GPIO_Port GPIOC
-
-#define USER_BUTTON_Pin GPIO_PIN_13
-#define USER_BUTTON_GPIO_Port GPIOC
+#define ECHO1_Pin GPIO_PIN_1
+#define ECHO1_GPIO_Port GPIOA
+#define ECHO1_EXTI_IRQn EXTI1_IRQn
+#define RFID_CS_Pin GPIO_PIN_4
+#define RFID_CS_GPIO_Port GPIOA
+#define RFID_RST_Pin GPIO_PIN_0
+#define RFID_RST_GPIO_Port GPIOB
+#define TRIG2_Pin GPIO_PIN_10
+#define TRIG2_GPIO_Port GPIOB
+#define ECHO2_Pin GPIO_PIN_12
+#define ECHO2_GPIO_Port GPIOB
+#define ECHO2_EXTI_IRQn EXTI15_10_IRQn
+#define TRIG3_Pin GPIO_PIN_13
+#define TRIG3_GPIO_Port GPIOB
+#define ECHO3_Pin GPIO_PIN_14
+#define ECHO3_GPIO_Port GPIOB
+#define ECHO3_EXTI_IRQn EXTI15_10_IRQn
+#define TRIG1_Pin GPIO_PIN_8
+#define TRIG1_GPIO_Port GPIOA
 
 /* USER CODE BEGIN Private defines */
 /* 1: B1 controls SG90 for bench testing. 0: original RFID parking operation. */

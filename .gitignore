@@ -1,11 +1,66 @@
+# ==========================================
+# 1. Bảo mật & Cấu hình môi trường
+# ==========================================
 .env
+.env.*
+!.env.example
+secrets.h
+firmware/esp32/config.h
 mosquitto/passwd
 certbot/
+*.pem
+*.key
+
+# ==========================================
+# 2. Deployments
+# ==========================================
 logs/
 .deploy.lock
-node_modules/
+
+# ==========================================
+# 3. Backend
+# ==========================================
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 .venv/
+env/
+venv/
+*.log
+
+# ==========================================
+# 4. Frontend
+# ==========================================
+node_modules/
 dist/
 .angular/
+.npm/
+
+# ==========================================
+# 5. Firmware STM32
+# ==========================================
+firmware/stm32/Debug/
+firmware/stm32/Release/
+firmware/stm32/.settings/
+firmware/stm32/*.launch
+firmware/stm32/*.bin
+*.o
+*.elf
+*.hex
+*.map
+*.d
+*.su
+
+# ==========================================
+# 6. Firmware ESP32
+# ==========================================
+firmware/esp32/build/
+firmware/esp32/.vscode/
+.pio/
+
+# ==========================================
+# 7. OS & IDE rác
+# ==========================================
+.DS_Store
+Thumbs.db
+.vscode/

@@ -102,61 +102,7 @@ Kiểm tra: mở trình duyệt tại <http://localhost:4200>.
 
 ---
 
-## 4. Dành cho thành viên Firmware (Gateway / ESP32 / STM32)
-
-Phần cứng giao tiếp với hệ thống thông qua giao thức MQTT.
-
-### A. Thông số kết nối MQTT
-
-- **Broker host:**
-  - Test local (cùng mạng với máy dev): dùng IP máy tính của bạn (ví dụ `192.168.1.x`).
-  - Test online (qua server staging): `spark-hub.duckdns.org`
-- **Port:** `1883` (TCP tiêu chuẩn)
-- **Xác thực:**
-  - Username: lấy từ biến `MQTT_USER` trong file `.env` (mặc định: `parking_gw`)
-  - Password: lấy từ biến `MQTT_PASSWORD` trong file `.env`
-
-### B. Quy ước topic và định dạng dữ liệu (JSON)
-
-**Gateway gửi trạng thái chỗ đỗ (Publish)**
-
-- Topic: `parking/slots/<slot_id>/status`
-- Payload mẫu:
-
-  ```json
-  {
-    "slot_id": "A01",
-    "is_occupied": true,
-    "distance_cm": 25.4,
-    "timestamp": 1729418400
-  }
-  ```
-
-**Gateway gửi thông tin xe ra/vào từ RFID (Publish)**
-
-- Topic: `parking/gate/entry`
-- Payload mẫu:
-
-  ```json
-  {
-    "card_uid": "E28011700000020",
-    "gate_id": "GATE_IN_01",
-    "timestamp": 1729418400
-  }
-  ```
-
-**Backend điều khiển đóng/mở barie (Subscribe)**
-
-- Topic: `parking/gate/control`
-- Payload:
-
-  ```json
-  {"gate_id": "GATE_IN_01", "action": "OPEN"}
-  ```
-
----
-
-## 5. Quy trình đưa code lên server (deploy thử nghiệm)
+## 4. Quy trình đưa code lên server (deploy thử nghiệm)
 
 Khi bạn muốn đưa các file khung hoặc code ban đầu lên Git để đồng bộ với máy chủ:
 

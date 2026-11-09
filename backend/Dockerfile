@@ -21,7 +21,5 @@ COPY --chown=app:app . .
 USER app
 EXPOSE 8000
 
-# GIẢ ĐỊNH: FastAPI, module app/main.py, biến `app`. Đổi lệnh này theo framework của bạn:
-#   Flask/Django: ["gunicorn", "-b", "0.0.0.0:8000", "-w", "1", "--threads", "4", "app:app"]
-# Chỉ 1 worker để tiết kiệm RAM trên t3.micro.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# Chạy migration trước khi khởi động Uvicorn (chỉ 1 worker để giữ trạng thái MQTT/WebSocket và tiết kiệm RAM).
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1"]

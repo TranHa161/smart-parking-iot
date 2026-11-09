@@ -206,3 +206,48 @@ async def test_malformed_occupancy_does_not_release_hold(db):
         await mqtt_service._handle_occupancy('parking/slot/1/occupancy', {'slot_id': 2, 'occupied': False, 'distance_cm': 15})
     async with db() as session:
         assert (await session.get(Slot, 1)).status == SlotStatus.RESERVED
+
+
+async def test_esp32_stm32_gateway_text_protocol(db, monkeypatch):
+    from unittest.mock import Mock
+    from app.core.config import Settings
+
+    down_mock = Mock(return_value=True)
+    monkeypatch.setattr(mqtt_service, 'publish_gateway_down', down_mock)
+
+    # 1. Đặt chỗ trước -> Slot 1 chuyển RESERVED -> khi STM32 gửi BOOT hoặc SLOTS:0,0 sẽ nhận RESERVE:1
+    booking = await create_booking('0912345678', 1)
+    await mqtt_service._handle_gateway_text('parking/gate/up', 'BOOT')
+    down_mock.assert_called_with('RESERVE:1')
+
+    # 2. Quẹt thẻ chưa được cấp quyền trên STM32 -> nhận DENY
+    down_mock.reset_mock()
+    await mqtt_service._handle_gateway_text('parking/gate/up', 'RFID:CARD1')
+    down_mock.assert_called_once_with('DENY')
+
+    # 3. Bảo vệ quét QR cấp thẻ CARD1 -> Khách quẹt RFID:CARD1 tại STM32 -> tự nhận diện cổng IN
+    await verify_booking_and_assign_rfid(booking['qr_code_token'], 'CARD1')
+    await mqtt_service._handle_gateway_text('parking/gate/up', 'RFID:CARD1')
+    assert mqtt_service.publish_barrier_command.call_count == 1
+
+    # 4. STM32 gửi SLOTS:2,0 -> Slot 1 chuyển OCCUPIED
+    await mqtt_service._handle_gateway_text('parking/gate/up', 'SLOTS:2,0')
+    async with db() as session:
+        assert (await session.get(Slot, 1)).status == SlotStatus.OCCUPIED
+
+    # 5. Khách quẹt RFID:CARD1 lần nữa trên STM32 -> tự nhận diện cổng OUT và phát FEE:<total_fee> xuống LCD
+    down_mock.reset_mock()
+    await mqtt_service._handle_gateway_text('parking/gate/up', 'RFID:CARD1')
+    down_mock.assert_called_once_with('FEE:10000')
+
+    # 6. Kiểm tra Settings tự chuẩn hóa DATABASE_URL và alias MQTT từ docker-compose.yml
+    cfg = Settings(
+        DATABASE_URL='postgresql://u:p@postgres:5432/parking',
+        MQTT_HOST='mosquitto',
+        MQTT_USER='parking_gw',
+        SECRET_KEY='ignored-extra',
+    )
+    assert cfg.DATABASE_URL == 'postgresql+asyncpg://u:p@postgres:5432/parking'
+    assert cfg.MQTT_BROKER_HOST == 'mosquitto'
+    assert cfg.MQTT_USERNAME == 'parking_gw'
+

@@ -52,9 +52,12 @@ class MQTTService:
         if rc == 0:
             self.is_connected = True
             logger.info("✅ Đã kết nối thành công tới MQTT Broker!")
-            # Lắng nghe các topic từ STM32/ESP
+            # 1. Topic JSON (Simulator / API chuẩn)
             client.subscribe("parking/slot/+/occupancy")
             client.subscribe("parking/gate/rfid_read")
+            # 2. Topic Text (Cầu nối UART <-> MQTT của ESP32 + STM32F401RE)
+            client.subscribe("parking/gate/up")
+            client.subscribe("parking/gate/status")
         else:
             logger.error(f"Kết nối MQTT Broker thất bại, mã lỗi rc={rc}")
 
@@ -66,15 +69,21 @@ class MQTTService:
         if not self.loop:
             return
         try:
-            payload = json.loads(msg.payload.decode("utf-8"))
-            if not isinstance(payload, dict):
-                raise ValueError("Payload must be an object")
-            if msg.topic.startswith("parking/slot/") and msg.topic.endswith("/occupancy"):
-                coroutine = self._handle_occupancy(msg.topic, payload)
-            elif msg.topic == "parking/gate/rfid_read":
-                coroutine = self._handle_rfid(payload)
+            text = msg.payload.decode("utf-8").strip()
+            if msg.topic in ("parking/gate/up", "parking/gate/status"):
+                if not text:
+                    return
+                coroutine = self._handle_gateway_text(msg.topic, text)
             else:
-                return
+                payload = json.loads(text)
+                if not isinstance(payload, dict):
+                    raise ValueError("Payload must be an object")
+                if msg.topic.startswith("parking/slot/") and msg.topic.endswith("/occupancy"):
+                    coroutine = self._handle_occupancy(msg.topic, payload)
+                elif msg.topic == "parking/gate/rfid_read":
+                    coroutine = self._handle_rfid(payload)
+                else:
+                    return
             future = asyncio.run_coroutine_threadsafe(coroutine, self.loop)
             future.add_done_callback(self._report_result)
         except (UnicodeDecodeError, ValueError):
@@ -112,14 +121,138 @@ class MQTTService:
         event = GateRfidEvent.model_validate(payload)
         await process_rfid_swipe(event.gate, event.card_uid)
 
+    async def _handle_gateway_text(self, topic: str, line: str):
+        """Xử lý giao thức dòng lệnh từ ESP32 Gateway (parking/gate/up, parking/gate/status)."""
+        if topic == "parking/gate/status":
+            logger.info("Trạng thái ESP32 Gateway: %s", line)
+            if line.lower() == "online":
+                await self._sync_reserved_slots_to_gateway()
+            return
+
+        if line == "BOOT":
+            logger.info("STM32 khởi động (BOOT) -> đồng bộ trạng thái giữ chỗ xuống mạch")
+            await self._sync_reserved_slots_to_gateway()
+        elif line.startswith("SLOTS:"):
+            await self._handle_gateway_slots(line[6:])
+        elif line.startswith("RFID:"):
+            await self._handle_gateway_rfid(line[5:])
+        else:
+            logger.warning("Bỏ qua dòng lệnh không xác định trên %s: %s", topic, line)
+
+    async def _sync_reserved_slots_to_gateway(self):
+        from sqlalchemy import select
+        from app.services.parking_state import state_transaction, expire_holds, dispatch
+        from app.models.models import Slot, SlotStatus
+
+        events = []
+        reserved_ids = []
+        async with state_transaction() as db:
+            await expire_holds(db, events)
+            slots = (await db.scalars(select(Slot).order_by(Slot.id))).all()
+            for slot in slots:
+                if slot.status == SlotStatus.RESERVED and not slot.physical_occupied:
+                    reserved_ids.append(slot.id)
+        await dispatch(events)
+        for sid in reserved_ids:
+            self.publish_gateway_down(f"RESERVE:{sid}")
+
+    async def _handle_gateway_slots(self, raw_values: str):
+        """Cập nhật trạng thái cảm biến từ bản tin SLOTS:s1,s2,s3 (0=AVAILABLE, 1=RESERVED, 2=OCCUPIED)."""
+        from app.services.parking_state import state_transaction, expire_holds, sync_slot, dispatch
+        from app.models.models import Slot, SlotStatus
+
+        parts = [p.strip() for p in raw_values.split(",") if p.strip()]
+        if not parts:
+            raise ValueError("Empty SLOTS payload")
+        codes = [int(p) for p in parts]
+        if any(c not in (0, 1, 2) for c in codes):
+            raise ValueError("SLOTS status code must be 0, 1, or 2")
+
+        events = []
+        fixup_commands = []
+        async with state_transaction() as db:
+            await expire_holds(db, events)
+            for idx, code in enumerate(codes, start=1):
+                slot = await db.get(Slot, idx)
+                if not slot:
+                    continue
+                occupied = (code == 2)
+                if slot.physical_occupied != occupied:
+                    slot.physical_occupied = occupied
+                    slot.distance_cm = 10.0 if occupied else 100.0
+                    await sync_slot(db, slot, events)
+                elif not occupied:
+                    # Đồng bộ lại cờ giữ chỗ trên STM32 nếu lệch với DB
+                    if slot.status == SlotStatus.RESERVED and code == 0:
+                        fixup_commands.append(f"RESERVE:{slot.id}")
+                    elif slot.status == SlotStatus.AVAILABLE and code == 1:
+                        fixup_commands.append(f"CANCEL:{slot.id}")
+        await dispatch(events)
+        for cmd in fixup_commands:
+            self.publish_gateway_down(cmd)
+
+    async def _handle_gateway_rfid(self, raw_uid: str):
+        """Xử lý bản tin RFID:<UID> từ 1 đầu đọc RC522 trên STM32, tự suy luận IN/OUT theo trạng thái phiên."""
+        from fastapi import HTTPException
+        from sqlalchemy import select
+        from app.services import parking_state
+        from app.models.models import ParkingSession, SessionStatus
+        from app.services.gate_service import process_rfid_swipe
+        from app.api.websocket import ws_manager
+
+        card_uid = raw_uid.strip().upper()
+        if not card_uid:
+            raise ValueError("Empty RFID UID")
+
+        async with parking_state.AsyncSessionLocal() as db:
+            active_session = await db.scalar(
+                select(ParkingSession).where(
+                    ParkingSession.card_uid == card_uid,
+                    ParkingSession.time_out.is_(None),
+                )
+            )
+            if active_session and active_session.status in {
+                SessionStatus.PARKING,
+                SessionStatus.PAYMENT_PENDING,
+            }:
+                gate = "OUT"
+            else:
+                gate = "IN"
+
+        try:
+            result = await process_rfid_swipe(gate, card_uid)
+        except HTTPException as exc:
+            logger.warning("Từ chối thẻ %s tại cổng %s: %s", card_uid, gate, exc.detail)
+            self.publish_gateway_down("DENY")
+            await ws_manager.broadcast(
+                "GATE_DENIED",
+                {"card_uid": card_uid, "gate": gate, "reason": exc.detail},
+            )
+            return
+
+        if gate == "OUT" and result.get("total_fee") is not None:
+            self.publish_gateway_down(f"FEE:{result['total_fee']}")
+
+    def publish_gateway_down(self, command: str) -> bool:
+        """Gửi dòng lệnh text xuống ESP32/STM32 qua topic parking/gate/down."""
+        topic = "parking/gate/down"
+        if self.client and self.is_connected:
+            info = self.client.publish(topic, command, qos=1)
+            logger.info("Đã phát MQTT tới [%s]: %s", topic, command)
+            return info.rc == mqtt.MQTT_ERR_SUCCESS
+        logger.info("[Offline Mode] Lệnh xuống Gateway [%s]: %s", topic, command)
+        return False
+
     def publish_barrier_command(self, gate: str = "IN", action: str = "OPEN", duration_seconds: int = 5):
-        """Gửi lệnh mở/đóng động cơ Servo Barrier"""
+        """Gửi lệnh mở/đóng động cơ Servo Barrier (hỗ trợ cả JSON Simulator và Text Gateway)"""
         topic = "parking/gate/barrier_cmd"
         payload = json.dumps({
             "gate": gate,
             "action": action,
             "duration_seconds": duration_seconds
         })
+        if action == "OPEN":
+            self.publish_gateway_down("OPEN_GATE")
         if self.client and self.is_connected:
             info = self.client.publish(topic, payload, qos=1)
             logger.info(f"Đã phát MQTT tới [{topic}]: {payload}")
@@ -135,6 +268,10 @@ class MQTTService:
             "slot_id": slot_id,
             "color": color
         })
+        if color == "YELLOW":
+            self.publish_gateway_down(f"RESERVE:{slot_id}")
+        elif color == "GREEN":
+            self.publish_gateway_down(f"CANCEL:{slot_id}")
         if self.client and self.is_connected:
             info = self.client.publish(topic, payload, qos=1)
             logger.info(f"Đã phát MQTT tới [{topic}]: {payload}")

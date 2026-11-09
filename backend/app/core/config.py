@@ -1,6 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
-from pydantic import Field
+from pydantic import AliasChoices, Field, field_validator
 
 
 class Settings(BaseSettings):
@@ -13,11 +13,23 @@ class Settings(BaseSettings):
     # Redis (tùy chọn cho cache và distributed lock)
     REDIS_URL: str = "redis://localhost:6379/0"
     
-    # MQTT Broker (kết nối với Kit STM32/ESP)
-    MQTT_BROKER_HOST: str = "localhost"
-    MQTT_BROKER_PORT: int = 1883
-    MQTT_USERNAME: str = ""
-    MQTT_PASSWORD: str = ""
+    # MQTT Broker (hỗ trợ cả biến môi trường của docker-compose.yml root và backend/.env)
+    MQTT_BROKER_HOST: str = Field(
+        "localhost",
+        validation_alias=AliasChoices("MQTT_BROKER_HOST", "MQTT_HOST", "MQTT_BROKER"),
+    )
+    MQTT_BROKER_PORT: int = Field(
+        1883,
+        validation_alias=AliasChoices("MQTT_BROKER_PORT", "MQTT_PORT"),
+    )
+    MQTT_USERNAME: str = Field(
+        "",
+        validation_alias=AliasChoices("MQTT_USERNAME", "MQTT_USER"),
+    )
+    MQTT_PASSWORD: str = Field(
+        "",
+        validation_alias=AliasChoices("MQTT_PASSWORD", "MQTT_PASS"),
+    )
     MQTT_KEEP_ALIVE: int = 60
     
     # Nghiệp vụ
@@ -27,8 +39,23 @@ class Settings(BaseSettings):
     
     CORS_ORIGINS: List[str] = ["*"]
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def ensure_async_postgres_scheme(cls, v: str) -> str:
+        if isinstance(v, str):
+            if v.startswith("postgres://"):
+                return "postgresql+asyncpg://" + v[len("postgres://"):]
+            if v.startswith("postgresql://"):
+                return "postgresql+asyncpg://" + v[len("postgresql://"):]
+        return v
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
 
 settings = Settings()
+
 

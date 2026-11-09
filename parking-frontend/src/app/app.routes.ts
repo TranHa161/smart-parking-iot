@@ -4,6 +4,7 @@ import { RegisterComponent } from './pages/register/register.component';
 import { HomeComponent } from './pages/home/home.component';
 import { BookingComponent } from './pages/booking/booking.component';
 import { ConfirmationComponent } from './pages/confirmation/confirmation.component';
+import { GuardComponent } from './pages/guard/guard.component';
 
 export const routes: Routes = [
   { path: '', redirectTo: 'home', pathMatch: 'full' },
@@ -12,5 +13,6 @@ export const routes: Routes = [
   { path: 'home', component: HomeComponent },
   { path: 'booking', component: BookingComponent },
   { path: 'booking/confirmation', component: ConfirmationComponent },
+  { path: 'guard', component: GuardComponent },
   { path: '**', redirectTo: 'home' }
 ];

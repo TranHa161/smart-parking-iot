@@ -1,8 +1,37 @@
 {
-  "name": "smart-parking-frontend",
-  "version": "1.0.0",
+  "name": "parking-frontend",
+  "version": "0.0.0",
   "scripts": {
-    "build": "mkdir -p dist/frontend/browser && echo '<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Smart Parking</title><style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f0f2f5;}.card{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1);text-align:center;}</style></head><body><div class=\"card\"><h1>Smart Parking IoT System</h1><p>Môi trường Staging/Production đã sẵn sàng đón code từ nhóm!</p></div></body></html>' > dist/frontend/browser/index.html"
+    "ng": "ng",
+    "start": "ng serve --proxy-config proxy.conf.json",
+    "build": "ng build",
+    "watch": "ng build --watch --configuration development",
+    "test": "ng test"
   },
-  "dependencies": {}
+  "private": true,
+  "packageManager": "npm@12.2.1",
+  "dependencies": {
+    "@angular/common": "^22.2.0",
+    "@angular/compiler": "^22.2.0",
+    "@angular/core": "^22.2.0",
+    "@angular/forms": "^22.2.0",
+    "@angular/platform-browser": "^22.2.0",
+    "@angular/router": "^22.2.0",
+    "@primeuix/themes": "^3.1.0",
+    "primeicons": "^8.0.2",
+    "primeng": "^22.1.4",
+    "qrcode": "^1.5.4",
+    "rxjs": "~7.8.0",
+    "tslib": "^2.3.0"
+  },
+  "devDependencies": {
+    "@angular/build": "^22.2.4",
+    "@angular/cli": "^22.2.4",
+    "@angular/compiler-cli": "^22.2.0",
+    "@types/qrcode": "^1.5.6",
+    "jsdom": "^30.0.0",
+    "prettier": "^3.8.1",
+    "typescript": "~6.0.2",
+    "vitest": "^5.0.0"
+  }
 }

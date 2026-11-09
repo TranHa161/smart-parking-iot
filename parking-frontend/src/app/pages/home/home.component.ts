@@ -1,8 +1,10 @@
-import { Component } from '@angular/core';
+import { Component, OnDestroy, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router, RouterLink, RouterLinkActive } from '@angular/router';
 import { ButtonModule } from 'primeng/button';
+import { Subscription } from 'rxjs';
 import { AuthService } from '../../services/auth.service';
+import { BookingService } from '../../services/booking.service';
 import { PARKING_LOTS } from '../../data/parking-lots';
 import { ParkingLot } from '../../models/parking.models';
 
@@ -23,6 +25,10 @@ import { ParkingLot } from '../../models/parking.models';
 
         <a routerLink="/booking" routerLinkActive="active">
           Đặt slot
+        </a>
+
+        <a routerLink="/guard" routerLinkActive="active">
+          Trạm Bảo vệ
         </a>
 
         <ng-container *ngIf="isLoggedIn; else loginButton">
@@ -48,15 +54,18 @@ import { ParkingLot } from '../../models/parking.models';
       <main class="page">
         <section class="hero">
           <div>
-            <div class="eyebrow">BÃI ĐỖ XE THÔNG MINH</div>
+            <div class="eyebrow">BÃI ĐỖ XE THÔNG MINH IOT</div>
             <h1>Tìm chỗ đỗ xe.<br>Đặt trước thật dễ dàng.</h1>
-            <p class="lead">Chủ động chọn bãi xe và khung giờ phù hợp. Đến nơi, xuất trình mã QR để check-in nhanh chóng.</p>
-            <div style="margin-top:26px"><button pButton type="button" icon="pi pi-arrow-right" iconPos="right" (click)="goBooking()">Đặt chỗ ngay!</button></div>
+            <p class="lead">Chủ động chọn bãi xe và vị trí đỗ theo thời gian thực từ cảm biến. Đến nơi, xuất trình mã QR để nhận thẻ RFID check-in.</p>
+            <div style="margin-top:26px;display:flex;gap:12px;flex-wrap:wrap">
+              <button pButton type="button" icon="pi pi-arrow-right" iconPos="right" (click)="goBooking()">Đặt chỗ ngay!</button>
+              <button pButton type="button" severity="secondary" [outlined]="true" icon="pi pi-shield" routerLink="/guard">Mở Trạm Bảo vệ</button>
+            </div>
           </div>
           <div class="hero-art"><div class="circle"></div><i class="pi pi-car big-icon"></i></div>
         </section>
         <div class="section-head">
-          <div><div class="eyebrow">LỰA CHỌN CỦA BẠN</div><h2>Danh sách bãi xe gần bạn</h2><p class="lead">Chọn bãi xe để xem thông tin và đăng ký slot.</p></div>
+          <div><div class="eyebrow">LỰA CHỌN CỦA BẠN</div><h2>Danh sách bãi xe gần bạn</h2><p class="lead">Chọn bãi xe để xem trạng thái cảm biến thời gian thực và đăng ký slot.</p></div>
         </div>
         <section class="parking-grid">
           <article class="parking-card" *ngFor="let lot of lots">
@@ -74,21 +83,49 @@ import { ParkingLot } from '../../models/parking.models';
     </div>
   `
 })
-
-export class HomeComponent {
-  lots: ParkingLot[] = PARKING_LOTS;
+export class HomeComponent implements OnInit, OnDestroy {
+  lots: ParkingLot[] = PARKING_LOTS.map(l => ({ ...l }));
   hasBooking = false;
   isLoggedIn = false;
+  private wsSub?: Subscription;
 
   constructor(
     private router: Router,
-    private auth: AuthService
+    private auth: AuthService,
+    private bookingService: BookingService
   ) {
-    this.hasBooking = !!localStorage.getItem(
-      'smart-parking-current-booking'
-    );
-
+    this.hasBooking = !!localStorage.getItem('smart-parking-current-booking');
     this.checkLoginStatus();
+  }
+
+  ngOnInit(): void {
+    this.loadLiveSlotSummary();
+    this.wsSub = this.bookingService.events$.subscribe(msg => {
+      if (['SLOT_UPDATED', 'BOOKING_EXPIRED', 'ENTRY_EXPIRED', 'VEHICLE_EXITED'].includes(msg.event)) {
+        this.loadLiveSlotSummary();
+      }
+    });
+  }
+
+  ngOnDestroy(): void {
+    this.wsSub?.unsubscribe();
+  }
+
+  async loadLiveSlotSummary(): Promise<void> {
+    try {
+      const slots = await this.bookingService.getSlots();
+      if (slots && slots.length > 0 && this.lots.length > 0) {
+        const available = slots.filter(s => s.status === 'AVAILABLE').length;
+        this.lots[0] = {
+          ...this.lots[0],
+          name: 'Bãi xe Thông minh IoT (Mô hình STM32)',
+          totalSlots: slots.length,
+          availableSlots: available,
+        };
+      }
+    } catch {
+      // Giữ dữ liệu mặc định nếu chưa bật Backend
+    }
   }
 
   checkLoginStatus(): void {
@@ -116,4 +153,5 @@ export class HomeComponent {
     this.router.navigateByUrl('/home');
   }
 }
+
 

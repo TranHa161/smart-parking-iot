@@ -63,4 +63,6 @@ firmware/esp32/.vscode/
 # ==========================================
 .DS_Store
 Thumbs.db
-.vscode/*.db
+.vscode/
+*.db
+

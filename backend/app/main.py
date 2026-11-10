@@ -7,11 +7,12 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.database import engine, AsyncSessionLocal
-from app.models.models import Slot, SlotStatus
+from app.models.models import Slot, SlotStatus, User, UserRole
+from app.services.auth_service import hash_password
 from app.services.mqtt_service import mqtt_service
 from app.services.scheduler import start_booking_expiration_scheduler
 from app.api.websocket import ws_manager
-from app.api import routes_slots, routes_booking, routes_gate
+from app.api import routes_slots, routes_booking, routes_gate, routes_auth
 
 # Cấu hình logging
 logging.basicConfig(
@@ -22,7 +23,10 @@ logger = logging.getLogger("main")
 
 
 async def init_default_data():
-    """Khởi tạo 4 slot đỗ xe mặc định cho mô hình demo nếu CSDL còn trống"""
+    """Khởi tạo 4 slot đỗ xe và tài khoản mặc định trong CSDL nếu chưa có"""
+    async with engine.begin() as conn:
+        await conn.run_sync(User.__table__.create, checkfirst=True)
+
     async with AsyncSessionLocal() as session:
         stmt = select(Slot)
         res = await session.execute(stmt)
@@ -38,6 +42,33 @@ async def init_default_data():
             session.add_all(demo_slots)
             await session.commit()
             logger.info("Đã khởi tạo thành công 4 slot: Slot 1, Slot 2, Slot 3, Slot 4.")
+
+        # Khởi tạo tài khoản Admin, Bảo vệ & Khách mặc định trong DB nếu chưa tồn tại
+        default_accounts = [
+            ("Quản trị viên hệ thống", "admin@parking.com", "0988888888", "123456", UserRole.ADMIN.value),
+            ("Bảo vệ trực cổng", "guard@parking.com", "0911111111", "123456", UserRole.GUARD.value),
+            ("Khách hàng", "user@parking.com", "0900000000", "123456", UserRole.USER.value),
+        ]
+        added_users = False
+        for name, email, phone, pwd, role in default_accounts:
+            exists = await session.scalar(select(User).where(User.email == email))
+            if not exists:
+                session.add(
+                    User(
+                        name=name,
+                        email=email,
+                        phone=phone,
+                        password_hash=hash_password(pwd),
+                        role=role,
+                    )
+                )
+                added_users = True
+            elif exists.role != role and email in {"admin@parking.com", "guard@parking.com"}:
+                exists.role = role
+                added_users = True
+        if added_users:
+            await session.commit()
+            logger.info("Đã khởi tạo tài khoản mặc định trong DB (admin@parking.com, guard@parking.com, user@parking.com).")
 
 
 @asynccontextmanager
@@ -89,6 +120,7 @@ app.add_middleware(
 )
 
 # Đăng ký các API Routers
+app.include_router(routes_auth.router, prefix=settings.API_V1_STR)
 app.include_router(routes_slots.router, prefix=settings.API_V1_STR)
 app.include_router(routes_booking.router, prefix=settings.API_V1_STR)
 app.include_router(routes_gate.router, prefix=settings.API_V1_STR)

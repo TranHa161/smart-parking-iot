@@ -1,4 +1,4 @@
-import { Component, OnDestroy, OnInit } from '@angular/core';
+import { ChangeDetectorRef, Component, OnDestroy, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
 import { ButtonModule } from 'primeng/button';
@@ -19,7 +19,6 @@ import QRCode from 'qrcode';
         <nav class="nav">
           <a routerLink="/home">Trang chủ</a>
           <a routerLink="/booking">Đặt chỗ</a>
-          <a routerLink="/guard">Trạm Bảo vệ</a>
           <a routerLink="/login" (click)="logout()">Đăng xuất</a>
         </nav>
       </header>
@@ -45,8 +44,8 @@ import QRCode from 'qrcode';
             <div class="summary-row"><span>Thời hạn QR</span><strong>{{ expiryText }} ({{ remainingText }})</strong></div>
             <div class="notice"><i class="pi pi-clock"></i><span>{{ statusMessage }}</span></div>
             <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:22px">
-              <button pButton type="button" icon="pi pi-shield" routerLink="/guard">Mở Trạm Bảo vệ để quét QR</button>
-              <button pButton type="button" icon="pi pi-plus" severity="secondary" [outlined]="true" (click)="newBooking()">Đặt chỗ mới</button>
+              <button pButton type="button" icon="pi pi-plus" (click)="newBooking()">Đặt chỗ mới</button>
+              <button pButton type="button" icon="pi pi-home" severity="secondary" [outlined]="true" routerLink="/home">Về trang chủ</button>
             </div>
           </section>
           <aside class="panel qr-panel">
@@ -74,7 +73,12 @@ export class ConfirmationComponent implements OnInit, OnDestroy {
   private intervalId?: ReturnType<typeof setInterval>;
   private wsSub?: Subscription;
 
-  constructor(private bookingService: BookingService, private router: Router, private auth: AuthService) {}
+  constructor(
+    private bookingService: BookingService,
+    private router: Router,
+    private auth: AuthService,
+    private cdr: ChangeDetectorRef
+  ) {}
 
   get statusMessage(): string {
     if (!this.booking) return '';
@@ -133,6 +137,7 @@ export class ConfirmationComponent implements OnInit, OnDestroy {
     this.remainingText = this.booking.status && this.booking.status !== 'PENDING'
       ? this.booking.status
       : `còn ${m}p ${String(s).padStart(2, '0')}s`;
+    this.cdr.markForCheck();
   }
 
   ngOnDestroy(): void {

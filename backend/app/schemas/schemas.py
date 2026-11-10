@@ -106,3 +106,41 @@ class OccupancyEvent(BaseModel):
     slot_id: Optional[int] = Field(None, gt=0)
     occupied: StrictBool
     distance_cm: float = Field(ge=0, allow_inf_nan=False)
+
+
+# ---------------- AUTHENTICATION ----------------
+class UserRegisterRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    email: str = Field(..., min_length=3, max_length=120)
+    phone: str = Field(..., min_length=9, max_length=20)
+    password: str = Field(..., min_length=6, max_length=128)
+
+
+class AdminCreateUserRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    email: str = Field(..., min_length=3, max_length=120)
+    phone: str = Field(..., min_length=9, max_length=20)
+    password: str = Field(..., min_length=6, max_length=128)
+    role: Literal["guard", "user", "admin"] = "guard"
+
+
+class UserLoginRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=120)
+    password: str = Field(..., min_length=1, max_length=128)
+
+
+class UserResponse(BaseModel):
+    id: int
+    name: str
+    email: str
+    phone: str
+    role: Literal["user", "guard", "admin"]
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AuthResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse
+

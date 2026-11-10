@@ -1,4 +1,4 @@
-import { Component, OnDestroy, OnInit } from '@angular/core';
+import { ChangeDetectorRef, Component, OnDestroy, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
@@ -21,7 +21,6 @@ import { AuthService } from '../../services/auth.service';
         <nav class="nav">
           <a routerLink="/home">Trang chủ</a>
           <a class="active" routerLink="/booking">Đặt chỗ</a>
-          <a routerLink="/guard">Trạm Bảo vệ</a>
           <a routerLink="/login" (click)="logout()">Đăng xuất</a>
         </nav>
       </header>
@@ -115,9 +114,7 @@ import { AuthService } from '../../services/auth.service';
   `
 })
 export class BookingComponent implements OnInit, OnDestroy {
-  lots: ParkingLot[] = PARKING_LOTS.map((l, idx) =>
-    idx === 0 ? { ...l, name: 'Bãi xe Thông minh IoT (Mô hình STM32)' } : { ...l }
-  );
+  lots: ParkingLot[] = PARKING_LOTS.map(l => ({ ...l }));
   selectedLot: ParkingLot | undefined;
   date = '';
   time = '';
@@ -134,12 +131,13 @@ export class BookingComponent implements OnInit, OnDestroy {
     private route: ActivatedRoute,
     private router: Router,
     private bookingService: BookingService,
-    private auth: AuthService
+    private auth: AuthService,
+    private cdr: ChangeDetectorRef
   ) {
     const lotId = this.route.snapshot.queryParamMap.get('lot');
     this.selectedLot = this.lots.find(lot => lot.id === lotId) || this.lots[0];
     const user = this.auth.getCurrentUser();
-    this.phoneNumber = user?.phone || '0912345678';
+    this.phoneNumber = user?.phone || '';
     const now = new Date();
     now.setSeconds(0, 0);
     now.setMinutes(Math.ceil(now.getMinutes() / 15) * 15);
@@ -148,6 +146,15 @@ export class BookingComponent implements OnInit, OnDestroy {
   }
 
   ngOnInit(): void {
+    const user = this.auth.getCurrentUser();
+    if (!user) {
+      this.router.navigateByUrl('/login');
+      return;
+    }
+    if (user.role === 'guard') {
+      this.router.navigateByUrl('/guard');
+      return;
+    }
     this.loadSlots();
     this.wsSub = this.bookingService.events$.subscribe(msg => {
       if (['SLOT_UPDATED', 'BOOKING_EXPIRED', 'ENTRY_EXPIRED', 'VEHICLE_EXITED'].includes(msg.event)) {
@@ -171,8 +178,10 @@ export class BookingComponent implements OnInit, OnDestroy {
           this.selectedSlotItem = refreshed;
         }
       }
+      this.cdr.markForCheck();
     } catch {
       this.error = 'Không kết nối được Backend API (/api/slots). Hãy kiểm tra server FastAPI đang chạy.';
+      this.cdr.markForCheck();
     }
   }
 
@@ -223,6 +232,7 @@ export class BookingComponent implements OnInit, OnDestroy {
       await this.loadSlots();
     } finally {
       this.submitting = false;
+      this.cdr.markForCheck();
     }
   }
 

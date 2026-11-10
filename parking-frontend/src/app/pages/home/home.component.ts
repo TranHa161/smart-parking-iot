@@ -1,4 +1,4 @@
-import { Component, OnDestroy, OnInit } from '@angular/core';
+import { ChangeDetectorRef, Component, OnDestroy, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router, RouterLink, RouterLinkActive } from '@angular/router';
 import { ButtonModule } from 'primeng/button';
@@ -23,15 +23,22 @@ import { ParkingLot } from '../../models/parking.models';
           Trang chủ
         </a>
 
-        <a routerLink="/booking" routerLinkActive="active">
+        <a *ngIf="!isGuard && !isAdmin" routerLink="/booking" routerLinkActive="active">
           Đặt slot
         </a>
 
-        <a routerLink="/guard" routerLinkActive="active">
+        <a *ngIf="isAdmin" routerLink="/admin" routerLinkActive="active">
+          Quản trị
+        </a>
+
+        <a *ngIf="isGuard || isAdmin" routerLink="/guard" routerLinkActive="active">
           Trạm Bảo vệ
         </a>
 
         <ng-container *ngIf="isLoggedIn; else loginButton">
+          <span style="font-size:12px;color:var(--muted)">
+            {{ isAdmin ? '👑 Admin' : isGuard ? '🛡️ Bảo vệ' : '👤 ' + userName }}
+          </span>
           <button
             pButton
             type="button"
@@ -58,8 +65,9 @@ import { ParkingLot } from '../../models/parking.models';
             <h1>Tìm chỗ đỗ xe.<br>Đặt trước thật dễ dàng.</h1>
             <p class="lead">Chủ động chọn bãi xe và vị trí đỗ theo thời gian thực từ cảm biến. Đến nơi, xuất trình mã QR để nhận thẻ RFID check-in.</p>
             <div style="margin-top:26px;display:flex;gap:12px;flex-wrap:wrap">
-              <button pButton type="button" icon="pi pi-arrow-right" iconPos="right" (click)="goBooking()">Đặt chỗ ngay!</button>
-              <button pButton type="button" severity="secondary" [outlined]="true" icon="pi pi-shield" routerLink="/guard">Mở Trạm Bảo vệ</button>
+              <button *ngIf="!isGuard && !isAdmin" pButton type="button" icon="pi pi-arrow-right" iconPos="right" (click)="goBooking()">Đặt chỗ ngay!</button>
+              <button *ngIf="isAdmin" pButton type="button" icon="pi pi-cog" routerLink="/admin">Vào Trang Quản trị</button>
+              <button *ngIf="isGuard || isAdmin" pButton type="button" icon="pi pi-shield" [outlined]="isAdmin" routerLink="/guard">Vào Trạm Bảo vệ</button>
             </div>
           </div>
           <div class="hero-art"><div class="circle"></div><i class="pi pi-car big-icon"></i></div>
@@ -87,12 +95,16 @@ export class HomeComponent implements OnInit, OnDestroy {
   lots: ParkingLot[] = PARKING_LOTS.map(l => ({ ...l }));
   hasBooking = false;
   isLoggedIn = false;
+  isGuard = false;
+  isAdmin = false;
+  userName = '';
   private wsSub?: Subscription;
 
   constructor(
     private router: Router,
     private auth: AuthService,
-    private bookingService: BookingService
+    private bookingService: BookingService,
+    private cdr: ChangeDetectorRef
   ) {
     this.hasBooking = !!localStorage.getItem('smart-parking-current-booking');
     this.checkLoginStatus();
@@ -114,22 +126,26 @@ export class HomeComponent implements OnInit, OnDestroy {
   async loadLiveSlotSummary(): Promise<void> {
     try {
       const slots = await this.bookingService.getSlots();
-      if (slots && slots.length > 0 && this.lots.length > 0) {
+      if (slots && this.lots.length > 0) {
         const available = slots.filter(s => s.status === 'AVAILABLE').length;
         this.lots[0] = {
           ...this.lots[0],
-          name: 'Bãi xe Thông minh IoT (Mô hình STM32)',
           totalSlots: slots.length,
           availableSlots: available,
         };
+        this.cdr.markForCheck();
       }
     } catch {
-      // Giữ dữ liệu mặc định nếu chưa bật Backend
+      // Không có kết nối Backend
     }
   }
 
   checkLoginStatus(): void {
-    this.isLoggedIn = !!this.auth.getCurrentUser();
+    const user = this.auth.getCurrentUser();
+    this.isLoggedIn = !!user;
+    this.isGuard = user?.role === 'guard';
+    this.isAdmin = user?.role === 'admin';
+    this.userName = user?.name || 'Khách';
   }
 
   goLogin(): void {
@@ -141,6 +157,14 @@ export class HomeComponent implements OnInit, OnDestroy {
       this.router.navigateByUrl('/login');
       return;
     }
+    if (this.isAdmin) {
+      this.router.navigateByUrl('/admin');
+      return;
+    }
+    if (this.isGuard) {
+      this.router.navigateByUrl('/guard');
+      return;
+    }
 
     this.router.navigate(['/booking'], {
       queryParams: lot ? { lot: lot.id } : {}
@@ -150,7 +174,10 @@ export class HomeComponent implements OnInit, OnDestroy {
   logout(): void {
     this.auth.logout();
     this.isLoggedIn = false;
-    this.router.navigateByUrl('/home');
+    this.isGuard = false;
+    this.isAdmin = false;
+    this.userName = '';
+    this.router.navigateByUrl('/login');
   }
 }
 

@@ -43,6 +43,19 @@ def upgrade():
     op.create_index("uq_session_booking", "parking_sessions", ["booking_id"], unique=True)
     # Repair legacy expired/cancelled holds, without altering occupied slots.
     op.execute("UPDATE slots SET status = 'AVAILABLE' WHERE status = 'RESERVED' AND NOT EXISTS (SELECT 1 FROM bookings WHERE bookings.slot_id = slots.id AND bookings.status = 'PENDING')")
+    if not sa.inspect(bind).has_table("users"):
+        op.create_table(
+            "users",
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("name", sa.String(100), nullable=False),
+            sa.Column("email", sa.String(120), nullable=False, unique=True),
+            sa.Column("phone", sa.String(20), nullable=False),
+            sa.Column("password_hash", sa.String(255), nullable=False),
+            sa.Column("role", sa.String(20), nullable=False, server_default="user"),
+            sa.Column("created_at", sa.DateTime()),
+        )
+        op.create_index("ix_users_email", "users", ["email"], unique=True)
+
 
 
 def downgrade():

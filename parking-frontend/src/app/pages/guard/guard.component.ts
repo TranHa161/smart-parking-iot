@@ -1,9 +1,10 @@
-import { Component, OnDestroy, OnInit } from '@angular/core';
+import { ChangeDetectorRef, Component, OnDestroy, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { RouterLink } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { ButtonModule } from 'primeng/button';
 import { Subscription } from 'rxjs';
+import { AuthService } from '../../services/auth.service';
 import { BookingService } from '../../services/booking.service';
 import { ParkingSessionItem, SlotItem } from '../../models/parking.models';
 
@@ -14,11 +15,12 @@ import { ParkingSessionItem, SlotItem } from '../../models/parking.models';
   template: `
     <div class="shell">
       <header class="topbar">
-        <a class="brand" routerLink="/home"><span class="brand-mark"><i class="pi pi-car"></i></span> ParkSmart</a>
+        <a class="brand" routerLink="/guard"><span class="brand-mark"><i class="pi pi-shield"></i></span> ParkSmart Guard</a>
         <nav class="nav">
-          <a routerLink="/home">Trang chủ</a>
-          <a routerLink="/booking">Đặt chỗ</a>
+          <a *ngIf="isAdmin" routerLink="/admin">Quản lý Tài khoản</a>
           <a class="active" routerLink="/guard">Trạm Bảo vệ</a>
+          <span style="font-size:12px;color:var(--muted)">{{ isAdmin ? '👑' : '🛡️' }} {{ guardName }}</span>
+          <button pButton type="button" severity="secondary" [outlined]="true" (click)="logout()">Đăng xuất</button>
         </nav>
       </header>
 
@@ -57,17 +59,14 @@ import { ParkingSessionItem, SlotItem } from '../../models/parking.models';
         <div class="booking-layout" style="margin-bottom:22px">
           <section class="panel">
             <h2>2. Xác thực QR Đặt trước & Cấp thẻ RFID</h2>
-            <p class="lead" style="margin-bottom:16px">Quét hoặc dán token QR của khách đặt trước để gán thẻ RFID.</p>
+            <p class="lead" style="margin-bottom:16px">Quét hoặc nhập mã QR của khách đặt trước để gán thẻ RFID.</p>
             <div class="form-field">
-              <div style="display:flex;justify-content:space-between">
-                <label>Mã QR Token *</label>
-                <button type="button" class="link-btn" (click)="fillLatestCustomerQr()">Lấy mã QR vừa đặt trên máy này</button>
-              </div>
-              <input class="native-input" [(ngModel)]="qrTokenInput" placeholder="Dán qr_code_token của khách...">
+              <label>Mã QR Token *</label>
+              <input class="native-input" [(ngModel)]="qrTokenInput" placeholder="Nhập hoặc quét qr_code_token...">
             </div>
             <div class="form-field">
               <label>UID Thẻ RFID cấp cho khách *</label>
-              <input class="native-input" [(ngModel)]="verifyCardUid" placeholder="Ví dụ: TEST_CARD_01 hoặc A1B2C3D4">
+              <input class="native-input" [(ngModel)]="verifyCardUid" placeholder="Nhập UID thẻ RFID...">
             </div>
             <button pButton type="button" icon="pi pi-qrcode" (click)="verifyQr()">Xác thực QR & Cấp thẻ</button>
           </section>
@@ -77,15 +76,15 @@ import { ParkingSessionItem, SlotItem } from '../../models/parking.models';
             <div class="form-field">
               <label>Đăng ký UID thẻ RFID mới vào kho thẻ</label>
               <div style="display:flex;gap:8px">
-                <input class="native-input" [(ngModel)]="newCardUid" placeholder="Ví dụ: TEST_CARD_01">
+                <input class="native-input" [(ngModel)]="newCardUid" placeholder="Nhập UID thẻ RFID...">
                 <button pButton type="button" (click)="registerCard()">Đăng ký thẻ</button>
               </div>
             </div>
             <hr style="border:0;border-top:1px solid var(--line);margin:16px 0">
             <div class="form-field">
-              <label>Cấp thẻ nhanh cho Khách vãng lai (Giữ 1 slot trống)</label>
+              <label>Cấp thẻ cho Khách vãng lai (Giữ 1 slot trống)</label>
               <div style="display:flex;gap:8px">
-                <input class="native-input" [(ngModel)]="walkInCardUid" placeholder="UID thẻ (vd: TEST_CARD_01)">
+                <input class="native-input" [(ngModel)]="walkInCardUid" placeholder="Nhập UID thẻ RFID...">
                 <button pButton type="button" severity="secondary" (click)="issueWalkIn()">Cấp thẻ vãng lai</button>
               </div>
             </div>
@@ -111,8 +110,8 @@ import { ParkingSessionItem, SlotItem } from '../../models/parking.models';
                   <th>Slot</th>
                   <th>Trạng thái</th>
                   <th>Giờ vào</th>
-                  <th>Phí tạm tính / chốt</th>
-                  <th>Thao tác (Mô phỏng quẹt thẻ / Thu tiền / Xe ra)</th>
+                  <th>Phí gửi xe</th>
+                  <th>Thao tác</th>
                 </tr>
               </thead>
               <tbody>
@@ -125,20 +124,6 @@ import { ParkingSessionItem, SlotItem } from '../../models/parking.models';
                   <td><strong>{{ s.total_fee | number }}đ</strong> ({{ s.payment_status }})</td>
                   <td>
                     <div style="display:flex;gap:6px;flex-wrap:wrap">
-                      <button
-                        *ngIf="s.status === 'AUTHORIZED'"
-                        type="button"
-                        class="mini-btn"
-                        (click)="simulateSwipe('IN', s.card_uid)">
-                        Quẹt IN (Mở cổng vào)
-                      </button>
-                      <button
-                        *ngIf="s.status === 'PARKING'"
-                        type="button"
-                        class="mini-btn"
-                        (click)="simulateSwipe('OUT', s.card_uid)">
-                        Quẹt OUT (Báo phí)
-                      </button>
                       <button
                         *ngIf="s.status === 'PAYMENT_PENDING'"
                         type="button"
@@ -153,6 +138,7 @@ import { ParkingSessionItem, SlotItem } from '../../models/parking.models';
                         (click)="confirmExit(s.id)">
                         Xác nhận xe đã ra khỏi cổng
                       </button>
+                      <span *ngIf="s.status !== 'PAYMENT_PENDING' && s.status !== 'PAID'" style="color:var(--muted);font-size:12px">—</span>
                     </div>
                   </td>
                 </tr>
@@ -171,17 +157,34 @@ export class GuardComponent implements OnInit, OnDestroy {
   slots: SlotItem[] = [];
   sessions: ParkingSessionItem[] = [];
   qrTokenInput = '';
-  verifyCardUid = 'TEST_CARD_01';
-  newCardUid = 'TEST_CARD_01';
-  walkInCardUid = 'TEST_CARD_01';
+  verifyCardUid = '';
+  newCardUid = '';
+  walkInCardUid = '';
   bannerMessage = '';
   errorMessage = '';
+  guardName = 'Bảo vệ trực cổng';
+  isAdmin = false;
   private wsSub?: Subscription;
 
-  constructor(private bookingService: BookingService) {}
+  constructor(
+    private bookingService: BookingService,
+    private auth: AuthService,
+    private router: Router,
+    private cdr: ChangeDetectorRef
+  ) {}
 
   ngOnInit(): void {
-    this.fillLatestCustomerQr();
+    const user = this.auth.getCurrentUser();
+    if (!user) {
+      this.router.navigateByUrl('/login');
+      return;
+    }
+    if (user.role !== 'guard' && user.role !== 'admin') {
+      this.router.navigateByUrl('/home');
+      return;
+    }
+    this.isAdmin = user.role === 'admin';
+    this.guardName = user.name || 'Bảo vệ trực cổng';
     this.refreshAll();
     this.wsSub = this.bookingService.events$.subscribe((msg) => {
       if (msg.event === 'PAYMENT_REQUIRED') {
@@ -189,6 +192,7 @@ export class GuardComponent implements OnInit, OnDestroy {
       } else if (msg.event === 'GATE_DENIED') {
         this.errorMessage = `Từ chối thẻ ${msg.data?.card_uid}: ${msg.data?.reason}`;
       }
+      this.cdr.markForCheck();
       this.refreshAll();
     });
   }
@@ -205,15 +209,10 @@ export class GuardComponent implements OnInit, OnDestroy {
       ]);
       this.slots = slots;
       this.sessions = sessions;
+      this.cdr.markForCheck();
     } catch {
       this.errorMessage = 'Chưa kết nối được với Backend FastAPI.';
-    }
-  }
-
-  fillLatestCustomerQr(): void {
-    const current = this.bookingService.getBooking();
-    if (current?.qrCodeToken || current?.code) {
-      this.qrTokenInput = current.qrCodeToken || current.code;
+      this.cdr.markForCheck();
     }
   }
 
@@ -243,90 +242,96 @@ export class GuardComponent implements OnInit, OnDestroy {
         this.errorMessage = err?.error?.detail || 'Không thể đăng ký thẻ.';
       }
     }
+    this.cdr.markForCheck();
   }
 
   async verifyQr(): Promise<void> {
     if (!this.qrTokenInput.trim() || !this.verifyCardUid.trim()) return;
     this.clearMessages();
+    const token = this.qrTokenInput.trim();
+    const uid = this.verifyCardUid.trim();
     try {
-      // Đảm bảo thẻ đã được đăng ký trước khi gán
+      let res: any;
       try {
-        await this.bookingService.registerCard(this.verifyCardUid.trim());
-      } catch {
-        // Bỏ qua nếu thẻ đã tồn tại
+        res = await this.bookingService.verifyQrAndAssignCard(token, uid);
+      } catch (firstErr: any) {
+        if (firstErr?.status === 404 && String(firstErr?.error?.detail || '').includes('Thẻ')) {
+          await this.bookingService.registerCard(uid);
+          res = await this.bookingService.verifyQrAndAssignCard(token, uid);
+        } else {
+          throw firstErr;
+        }
       }
-      const res = await this.bookingService.verifyQrAndAssignCard(
-        this.qrTokenInput.trim(),
-        this.verifyCardUid.trim()
-      );
-      this.bannerMessage = `Đã xác thực QR (#${res.booking_id}) và cấp thẻ ${this.verifyCardUid.toUpperCase()} cho Slot ${res.slot_id}. Mời khách quẹt thẻ tại cổng VÀO!`;
+      this.bannerMessage = `✅ Đã xác thực QR (#${res.booking_id}) và cấp thẻ ${uid.toUpperCase()} cho Slot ${res.slot_id} (Phiên #${res.session_id}).`;
+      this.qrTokenInput = '';
       await this.refreshAll();
     } catch (err: any) {
       this.errorMessage = err?.error?.detail || 'Xác thực QR thất bại.';
     }
+    this.cdr.markForCheck();
   }
 
   async issueWalkIn(): Promise<void> {
     if (!this.walkInCardUid.trim()) return;
     this.clearMessages();
+    const uid = this.walkInCardUid.trim();
     try {
+      let res: any;
       try {
-        await this.bookingService.registerCard(this.walkInCardUid.trim());
-      } catch {
-        // Bỏ qua nếu thẻ đã tồn tại
+        res = await this.bookingService.createWalkIn(uid);
+      } catch (firstErr: any) {
+        if (firstErr?.status === 404 && String(firstErr?.error?.detail || '').includes('Thẻ')) {
+          await this.bookingService.registerCard(uid);
+          res = await this.bookingService.createWalkIn(uid);
+        } else {
+          throw firstErr;
+        }
       }
-      const res = await this.bookingService.createWalkIn(this.walkInCardUid.trim());
-      this.bannerMessage = `Đã cấp thẻ vãng lai ${res.card_uid} giữ Slot ${res.slot_id} (Phiên #${res.session_id}). Mời khách quẹt thẻ tại cổng VÀO!`;
+      this.bannerMessage = `✅ Đã cấp thẻ vãng lai ${res.card_uid} giữ Slot ${res.slot_id} (Phiên #${res.session_id}).`;
       await this.refreshAll();
     } catch (err: any) {
       this.errorMessage = err?.error?.detail || 'Không thể cấp thẻ vãng lai.';
     }
-  }
-
-  async simulateSwipe(gate: 'IN' | 'OUT', cardUid: string): Promise<void> {
-    this.clearMessages();
-    try {
-      const res = await this.bookingService.swipeRfid(gate, cardUid);
-      if (gate === 'IN') {
-        this.bannerMessage = `Thẻ ${cardUid} đã quẹt cổng VÀO -> Đã phát lệnh OPEN_GATE mở Barrier!`;
-      } else {
-        this.bannerMessage = `Thẻ ${cardUid} quẹt cổng RA -> Phí cần thu: ${res.total_fee?.toLocaleString()}đ.`;
-      }
-      await this.refreshAll();
-    } catch (err: any) {
-      this.errorMessage = err?.error?.detail || `Lỗi quẹt thẻ cổng ${gate}.`;
-    }
+    this.cdr.markForCheck();
   }
 
   async confirmPayment(sessionId: number): Promise<void> {
     this.clearMessages();
     try {
       const res = await this.bookingService.confirmPayment(sessionId);
-      this.bannerMessage = `Đã xác nhận thu ${res.total_fee?.toLocaleString()}đ cho phiên #${sessionId} -> Đã phát lệnh OPEN_GATE mở Barrier cổng RA!`;
+      this.bannerMessage = `✅ Đã xác nhận thu ${res.total_fee?.toLocaleString()}đ cho phiên #${sessionId} -> Đã phát lệnh OPEN_GATE mở Barrier cổng RA!`;
       await this.refreshAll();
     } catch (err: any) {
       this.errorMessage = err?.error?.detail || 'Xác nhận thanh toán thất bại.';
     }
+    this.cdr.markForCheck();
   }
 
   async confirmExit(sessionId: number): Promise<void> {
     this.clearMessages();
     try {
       await this.bookingService.confirmExit(sessionId);
-      this.bannerMessage = `Đã xác nhận xe phiên #${sessionId} qua cổng RA, thu hồi thẻ RFID và giải phóng Slot!`;
+      this.bannerMessage = `✅ Đã xác nhận xe phiên #${sessionId} qua cổng RA, thu hồi thẻ RFID và giải phóng Slot!`;
       await this.refreshAll();
     } catch (err: any) {
       this.errorMessage = err?.error?.detail || 'Xác nhận xe ra thất bại.';
     }
+    this.cdr.markForCheck();
   }
 
   async overrideBarrier(gate: 'IN' | 'OUT'): Promise<void> {
     this.clearMessages();
     try {
       await this.bookingService.overrideBarrier(gate, 'OPEN');
-      this.bannerMessage = `Đã gửi lệnh mở khẩn cấp Barrier cổng ${gate}.`;
+      this.bannerMessage = `🚧 Đã gửi lệnh mở khẩn cấp Barrier cổng ${gate}.`;
     } catch (err: any) {
       this.errorMessage = err?.error?.detail || 'Không thể gửi lệnh điều khiển Barrier.';
     }
+    this.cdr.markForCheck();
+  }
+
+  logout(): void {
+    this.auth.logout();
+    this.router.navigateByUrl('/login');
   }
 }

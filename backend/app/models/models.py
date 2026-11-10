@@ -33,6 +33,25 @@ class SessionStatus(str, enum.Enum):
     CANCELLED = "CANCELLED"
 
 
+class UserRole(str, enum.Enum):
+    USER = "user"
+    GUARD = "guard"
+    ADMIN = "admin"
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)
+    email = Column(String(120), unique=True, index=True, nullable=False)
+    phone = Column(String(20), nullable=False)
+    password_hash = Column(String(255), nullable=False)
+    role = Column(String(20), nullable=False, default=UserRole.USER.value)
+    created_at = Column(DateTime, default=utc_now)
+
+
+
 class ParkingControl(Base):
     """One DB row serializes capacity/state transitions for this small parking lot."""
     __tablename__ = "parking_control"

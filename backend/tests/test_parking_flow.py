@@ -251,3 +251,102 @@ async def test_esp32_stm32_gateway_text_protocol(db, monkeypatch):
     assert cfg.MQTT_BROKER_HOST == 'mosquitto'
     assert cfg.MQTT_USERNAME == 'parking_gw'
 
+
+async def test_auth_register_login_and_me(client, db):
+    reg = await client.post(
+        '/api/auth/register',
+        json={
+            'name': 'Nguyen Van A',
+            'email': 'nguyenvana@example.com',
+            'phone': '0912345678',
+            'password': 'password123',
+        },
+    )
+    assert reg.status_code == 201
+    reg_data = reg.json()
+    assert reg_data['user']['email'] == 'nguyenvana@example.com'
+    assert reg_data['user']['role'] == 'user'
+    assert reg_data['access_token']
+
+    dup = await client.post(
+        '/api/auth/register',
+        json={
+            'name': 'Nguyen Van A',
+            'email': 'nguyenvana@example.com',
+            'phone': '0912345678',
+            'password': 'password123',
+        },
+    )
+    assert dup.status_code == 409
+
+    login = await client.post(
+        '/api/auth/login',
+        json={'email': 'nguyenvana@example.com', 'password': 'password123'},
+    )
+    assert login.status_code == 200
+    token = login.json()['access_token']
+
+    bad_login = await client.post(
+        '/api/auth/login',
+        json={'email': 'nguyenvana@example.com', 'password': 'wrongpassword'},
+    )
+    assert bad_login.status_code == 401
+
+    me = await client.get('/api/auth/me', headers={'Authorization': f'Bearer {token}'})
+    assert me.status_code == 200
+    assert me.json()['email'] == 'nguyenvana@example.com'
+
+    # Khách hàng không được phép cấp tài khoản Bảo vệ
+    forbidden = await client.post(
+        '/api/auth/guards',
+        headers={'Authorization': f'Bearer {token}'},
+        json={
+            'name': 'Bao Ve 2',
+            'email': 'guard2@parking.com',
+            'phone': '0912223334',
+            'password': 'password123',
+            'role': 'guard',
+        },
+    )
+    assert forbidden.status_code == 403
+
+    # Tạo tài khoản Admin trong DB test và dùng quyền Admin cấp tài khoản Bảo vệ
+    from app.models.models import User, UserRole
+    from app.services.auth_service import hash_password, create_access_token
+
+    async with db() as s:
+        admin_user = User(
+            name='Admin Test',
+            email='admin@parking.com',
+            phone='0988888888',
+            password_hash=hash_password('admin123'),
+            role=UserRole.ADMIN.value,
+        )
+        s.add(admin_user)
+        await s.commit()
+        await s.refresh(admin_user)
+        admin_token = create_access_token(admin_user)
+
+    created_guard = await client.post(
+        '/api/auth/guards',
+        headers={'Authorization': f'Bearer {admin_token}'},
+        json={
+            'name': 'Bao Ve 2',
+            'email': 'guard2@parking.com',
+            'phone': '0912223334',
+            'password': 'password123',
+            'role': 'guard',
+        },
+    )
+    assert created_guard.status_code == 201
+    assert created_guard.json()['role'] == 'guard'
+
+    all_users = await client.get(
+        '/api/auth/users',
+        headers={'Authorization': f'Bearer {admin_token}'},
+    )
+    assert all_users.status_code == 200
+    assert len(all_users.json()) >= 3
+
+
+

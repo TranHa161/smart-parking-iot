@@ -20,8 +20,12 @@ def test_fresh_migration_and_rerun(tmp_path):
     assert migrate(path).returncode == 0
     with sqlite3.connect(path) as db:
         assert db.execute('SELECT revision FROM parking_control').fetchone() == (0,)
-        assert db.execute('SELECT version_num FROM alembic_version').fetchone() == ('002_entry_flow',)
+        assert db.execute('SELECT version_num FROM alembic_version').fetchone() == ('003_roles_reports',)
         assert 'authorized_until' in {row[1] for row in db.execute('PRAGMA table_info(parking_sessions)')}
+        assert 'issued_by' in {row[1] for row in db.execute('PRAGMA table_info(parking_sessions)')}
+        assert 'is_active' in {row[1] for row in db.execute('PRAGMA table_info(users)')}
+        assert 'license_plate' in {row[1] for row in db.execute('PRAGMA table_info(bookings)')}
+        assert 'event_type' in {row[1] for row in db.execute('PRAGMA table_info(gate_events)')}
     smoke = subprocess.run([sys.executable, str(BACKEND / 'tests/smoke_migrated.py')],
                            cwd=BACKEND, env=dict(os.environ, DATABASE_URL=f'sqlite+aiosqlite:///{path}'),
                            capture_output=True, text=True)

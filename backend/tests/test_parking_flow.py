@@ -180,22 +180,107 @@ async def test_concurrent_verify_and_payment_do_not_duplicate_commands(db):
     assert mqtt_service.publish_barrier_command.call_count == 2
 
 
-async def test_api_flow_and_validation(client):
-    registered = await client.post('/api/gate/cards', json={'card_uid': ' new_card '})
+async def _seed_role_headers(db):
+    from app.models.models import User, UserRole
+    from app.core.security import create_access_token, hash_password
+
+    async with db() as s:
+        u1 = User(
+            name='User 1',
+            email='u1@parking.com',
+            phone='0901111111',
+            password_hash=hash_password('123456'),
+            role=UserRole.USER.value,
+            is_active=True,
+        )
+        u2 = User(
+            name='User 2',
+            email='u2@parking.com',
+            phone='0902222222',
+            password_hash=hash_password('123456'),
+            role=UserRole.USER.value,
+            is_active=True,
+        )
+        guard = User(
+            name='Guard 1',
+            email='g1@parking.com',
+            phone='0911111111',
+            password_hash=hash_password('123456'),
+            role=UserRole.GUARD.value,
+            is_active=True,
+        )
+        admin = User(
+            name='Admin 1',
+            email='a1@parking.com',
+            phone='0988888888',
+            password_hash=hash_password('123456'),
+            role=UserRole.ADMIN.value,
+            is_active=True,
+        )
+        s.add_all([u1, u2, guard, admin])
+        await s.commit()
+        for acc in (u1, u2, guard, admin):
+            await s.refresh(acc)
+        return {
+            'user': {'Authorization': f'Bearer {create_access_token(u1)}'},
+            'user2': {'Authorization': f'Bearer {create_access_token(u2)}'},
+            'guard': {'Authorization': f'Bearer {create_access_token(guard)}'},
+            'admin': {'Authorization': f'Bearer {create_access_token(admin)}'},
+            'ids': {'user': u1.id, 'user2': u2.id, 'guard': guard.id, 'admin': admin.id},
+        }
+
+
+async def test_api_flow_and_validation(client, db):
+    tokens = await _seed_role_headers(db)
+    user_h = tokens['user']
+    guard_h = tokens['guard']
+
+    # Unauthenticated calls must be rejected (401)
+    assert (await client.post('/api/gate/cards', json={'card_uid': 'X'})).status_code == 401
+    assert (await client.post('/api/bookings', json={'phone_number': '0912345678'})).status_code == 401
+
+    # User cannot call staff endpoints (403)
+    assert (await client.post('/api/gate/cards', headers=user_h, json={'card_uid': 'X'})).status_code == 403
+    assert (await client.get('/api/gate/sessions', headers=user_h)).status_code == 403
+
+    registered = await client.post('/api/gate/cards', headers=guard_h, json={'card_uid': ' new_card '})
     assert registered.status_code == 201
     assert registered.json()['card_uid'] == 'NEW_CARD'
-    duplicate = await client.post('/api/gate/cards', json={'card_uid': 'NEW_CARD'})
+    duplicate = await client.post('/api/gate/cards', headers=guard_h, json={'card_uid': 'NEW_CARD'})
     assert duplicate.status_code == 409
-    booking = await client.post('/api/bookings', json={'phone_number': '0912345678'})
+
+    booking = await client.post(
+        '/api/bookings',
+        headers=user_h,
+        json={'phone_number': '0912345678', 'license_plate': ' 30a-123.45 '},
+    )
     assert booking.status_code == 200
-    checked = await client.post('/api/bookings/verify', json={'qr_code_token': booking.json()['qr_code_token'], 'rfid_card_uid': 'NEW_CARD'})
+    assert booking.json()['license_plate'] == '30A-123.45'
+    bid = booking.json()['id']
+
+    # Second active booking by same user is rejected (409)
+    second_booking = await client.post('/api/bookings', headers=user_h, json={'phone_number': '0912345678'})
+    assert second_booking.status_code == 409
+
+    # IDOR check: user2 cannot view user1's booking
+    assert (await client.get(f'/api/bookings/{bid}', headers=tokens['user2'])).status_code == 404
+    # Owner and staff can view it
+    assert (await client.get(f'/api/bookings/{bid}', headers=user_h)).status_code == 200
+    assert (await client.get(f'/api/bookings/{bid}', headers=guard_h)).status_code == 200
+
+    checked = await client.post(
+        '/api/bookings/verify',
+        headers=guard_h,
+        json={'qr_code_token': booking.json()['qr_code_token'], 'rfid_card_uid': 'NEW_CARD'},
+    )
     assert checked.status_code == 200
-    sessions = await client.get('/api/gate/sessions')
+    sessions = await client.get('/api/gate/sessions', headers=guard_h)
     assert sessions.status_code == 200
     assert sessions.json()[0]['time_in'] is None
-    assert (await client.post('/api/gate/rfid-swipe', json={'gate': 'bad', 'card_uid': 'CARD1'})).status_code == 422
-    assert (await client.post('/api/bookings', json={'phone_number': 'bad'})).status_code == 422
-    assert (await client.put('/api/slots/1/override?new_status=AVAILABLE')).status_code == 409
+    assert sessions.json()[0]['issued_by'] == tokens['ids']['guard']
+    assert (await client.post('/api/gate/rfid-swipe', headers=guard_h, json={'gate': 'bad', 'card_uid': 'CARD1'})).status_code == 422
+    assert (await client.post('/api/bookings', headers=user_h, json={'phone_number': 'bad'})).status_code == 422
+    assert (await client.put('/api/slots/1/override?new_status=AVAILABLE', headers=guard_h)).status_code == 409
 
 
 async def test_malformed_occupancy_does_not_release_hold(db):
@@ -312,7 +397,7 @@ async def test_auth_register_login_and_me(client, db):
 
     # Tạo tài khoản Admin trong DB test và dùng quyền Admin cấp tài khoản Bảo vệ
     from app.models.models import User, UserRole
-    from app.services.auth_service import hash_password, create_access_token
+    from app.core.security import hash_password, create_access_token
 
     async with db() as s:
         admin_user = User(
@@ -321,6 +406,7 @@ async def test_auth_register_login_and_me(client, db):
             phone='0988888888',
             password_hash=hash_password('admin123'),
             role=UserRole.ADMIN.value,
+            is_active=True,
         )
         s.add(admin_user)
         await s.commit()
@@ -339,7 +425,43 @@ async def test_auth_register_login_and_me(client, db):
         },
     )
     assert created_guard.status_code == 201
+    guard_id = created_guard.json()['id']
     assert created_guard.json()['role'] == 'guard'
+    assert created_guard.json()['is_active'] is True
+
+    # Lock guard account -> guard cannot login
+    locked = await client.patch(
+        f'/api/auth/users/{guard_id}/status',
+        headers={'Authorization': f'Bearer {admin_token}'},
+        json={'is_active': False},
+    )
+    assert locked.status_code == 200
+    assert locked.json()['is_active'] is False
+    locked_login = await client.post(
+        '/api/auth/login',
+        json={'email': 'guard2@parking.com', 'password': 'password123'},
+    )
+    assert locked_login.status_code == 403
+
+    # Unlock + reset password
+    unlocked = await client.patch(
+        f'/api/auth/users/{guard_id}/status',
+        headers={'Authorization': f'Bearer {admin_token}'},
+        json={'is_active': True},
+    )
+    assert unlocked.status_code == 200
+    reset_pw = await client.post(
+        f'/api/auth/users/{guard_id}/reset-password',
+        headers={'Authorization': f'Bearer {admin_token}'},
+        json={'new_password': 'newpassword456'},
+    )
+    assert reset_pw.status_code == 200
+    assert (
+        await client.post(
+            '/api/auth/login',
+            json={'email': 'guard2@parking.com', 'password': 'newpassword456'},
+        )
+    ).status_code == 200
 
     all_users = await client.get(
         '/api/auth/users',
@@ -347,6 +469,79 @@ async def test_auth_register_login_and_me(client, db):
     )
     assert all_users.status_code == 200
     assert len(all_users.json()) >= 3
+
+
+async def test_booking_cancel_and_admin_reports_and_audit(client, db):
+    tokens = await _seed_role_headers(db)
+    user_h = tokens['user']
+    guard_h = tokens['guard']
+    admin_h = tokens['admin']
+
+    # 1. User creates and cancels a booking -> slot becomes AVAILABLE again
+    b1 = await client.post('/api/bookings', headers=user_h, json={'slot_id': 1, 'license_plate': '29A-999.99'})
+    assert b1.status_code == 200
+    b1_id = b1.json()['id']
+    my_list = await client.get('/api/bookings/me', headers=user_h)
+    assert my_list.status_code == 200
+    assert len(my_list.json()) == 1
+
+    cancelled = await client.post(f'/api/bookings/{b1_id}/cancel', headers=user_h)
+    assert cancelled.status_code == 200
+    assert cancelled.json()['status'] == 'CANCELLED'
+
+    # 2. User books again, Guard verifies -> IN -> OUT -> Payment -> Exit
+    b2 = await client.post('/api/bookings', headers=user_h, json={'slot_id': 1, 'license_plate': '29A-888.88'})
+    assert b2.status_code == 200
+    verified = await client.post(
+        '/api/bookings/verify',
+        headers=guard_h,
+        json={'qr_code_token': b2.json()['qr_code_token'], 'rfid_card_uid': 'CARD1'},
+    )
+    assert verified.status_code == 200
+    sid = verified.json()['session_id']
+
+    assert (await client.post('/api/gate/rfid-swipe', headers=guard_h, json={'gate': 'IN', 'card_uid': 'CARD1'})).status_code == 200
+    assert (await client.post('/api/gate/rfid-swipe', headers=guard_h, json={'gate': 'OUT', 'card_uid': 'CARD1'})).status_code == 200
+    assert (await client.post('/api/gate/payment/confirm', headers=guard_h, json={'session_id': sid, 'guard_note': 'Tiền mặt'})).status_code == 200
+    assert (await client.post('/api/gate/exit/confirm', headers=guard_h, json={'session_id': sid})).status_code == 200
+
+    # 3. Barrier override requires reason
+    assert (await client.post('/api/gate/barrier/override', headers=guard_h, json={'gate': 'IN', 'action': 'OPEN'})).status_code == 422
+    ov = await client.post(
+        '/api/gate/barrier/override',
+        headers=guard_h,
+        json={'gate': 'IN', 'action': 'OPEN', 'reason': 'Xe cứu thương ưu tiên'},
+    )
+    assert ov.status_code == 200
+
+    # 4. Guard cannot access Admin reports (403), Admin can (200)
+    assert (await client.get('/api/reports/summary', headers=guard_h)).status_code == 403
+    summary = await client.get('/api/reports/summary', headers=admin_h)
+    assert summary.status_code == 200
+    s_data = summary.json()
+    assert s_data['total_revenue'] == 10000
+    assert s_data['today_revenue'] == 10000
+    assert s_data['paid_sessions_count'] == 1
+
+    rev = await client.get('/api/reports/revenue?days=7', headers=admin_h)
+    assert rev.status_code == 200
+    assert sum(item['revenue'] for item in rev.json()) == 10000
+
+    traffic = await client.get('/api/reports/traffic?days=7', headers=admin_h)
+    assert traffic.status_code == 200
+    assert sum(item['entries'] for item in traffic.json()) == 1
+
+    rep_sessions = await client.get('/api/reports/sessions', headers=admin_h)
+    assert rep_sessions.status_code == 200
+    assert rep_sessions.json()[0]['license_plate'] == '29A-888.88'
+    assert rep_sessions.json()[0]['confirmed_by_name'] == 'Guard 1'
+
+    events = await client.get('/api/reports/gate-events', headers=admin_h)
+    assert events.status_code == 200
+    types = [e['event_type'] for e in events.json()]
+    assert 'BARRIER_OVERRIDE' in types
+    assert 'PAYMENT_CONFIRMED' in types
+
 
 
 

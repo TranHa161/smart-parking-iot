@@ -20,13 +20,18 @@ Database cũ: sao lưu và dừng backend trước khi chạy `alembic upgrade h
 
 ## Docker Compose
 
+Dự án sử dụng 2 file Docker Compose tại **thư mục gốc** của repo:
+
 ```bash
-cd backend
+# 1) Môi trường phát triển cá nhân (chỉ dựng Postgres, Redis, Mosquitto tại 127.0.0.1)
+docker compose -f docker-compose.local.yml up -d
+
+# 2) Triển khai đầy đủ trên server (Postgres, Redis, Mosquitto, Backend, Nginx + Angular)
 docker compose up -d --build
 docker compose logs -f backend
 ```
 
-Container đợi PostgreSQL khỏe, chạy migration rồi khởi động một worker Uvicorn. Mật khẩu mẫu và broker anonymous trong Compose hiện dành cho môi trường phát triển; bước phân quyền/TLS cloud chưa triển khai trong đợt sửa này. Không dùng `--workers` nhiều hơn 1 vì MQTT client và WebSocket vẫn thuộc một process.
+Container backend đợi PostgreSQL khỏe, chạy `alembic upgrade head` rồi khởi động một worker Uvicorn (`--workers 1` để giữ trạng thái MQTT client và WebSocket trong cùng process).
 
 ## Quy tắc nghiệp vụ
 

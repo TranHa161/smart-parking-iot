@@ -18,7 +18,7 @@ import QRCode from 'qrcode';
         <a class="brand" routerLink="/home"><span class="brand-mark"><i class="pi pi-car"></i></span> ParkSmart</a>
         <nav class="nav">
           <a routerLink="/home">Trang chủ</a>
-          <a routerLink="/booking">Đặt chỗ</a>
+          <a routerLink="/booking">Đặt chỗ & Vé của tôi</a>
           <a routerLink="/login" (click)="logout()">Đăng xuất</a>
         </nav>
       </header>
@@ -39,12 +39,24 @@ import QRCode from 'qrcode';
             </div>
             <div class="summary-row"><span>Trạng thái</span><strong>{{ booking.status || 'PENDING' }}</strong></div>
             <div class="summary-row"><span>Số điện thoại</span><strong>{{ booking.phoneNumber || '—' }}</strong></div>
+            <div class="summary-row"><span>Biển số xe</span><strong>{{ booking.licensePlate || '—' }}</strong></div>
             <div class="summary-row"><span>Bãi xe</span><strong>{{ booking.lotName }}</strong></div>
             <div class="summary-row"><span>Slot được giữ</span><strong>{{ booking.slot }}</strong></div>
             <div class="summary-row"><span>Thời hạn QR</span><strong>{{ expiryText }} ({{ remainingText }})</strong></div>
             <div class="notice"><i class="pi pi-clock"></i><span>{{ statusMessage }}</span></div>
+            <p class="error-text" *ngIf="errorMessage" style="margin-top:12px">{{ errorMessage }}</p>
             <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:22px">
-              <button pButton type="button" icon="pi pi-plus" (click)="newBooking()">Đặt chỗ mới</button>
+              <button pButton type="button" icon="pi pi-plus" (click)="newBooking()">Đặt chỗ / Vé của tôi</button>
+              <button
+                *ngIf="booking.status === 'PENDING' && !expired && booking.bookingId"
+                pButton
+                type="button"
+                icon="pi pi-times"
+                severity="danger"
+                [outlined]="true"
+                (click)="cancelCurrentBooking()">
+                Hủy đặt chỗ
+              </button>
               <button pButton type="button" icon="pi pi-home" severity="secondary" [outlined]="true" routerLink="/home">Về trang chủ</button>
             </div>
           </section>
@@ -70,6 +82,7 @@ export class ConfirmationComponent implements OnInit, OnDestroy {
   expired = false;
   expiryText = '';
   remainingText = '';
+  errorMessage = '';
   private intervalId?: ReturnType<typeof setInterval>;
   private wsSub?: Subscription;
 
@@ -82,6 +95,9 @@ export class ConfirmationComponent implements OnInit, OnDestroy {
 
   get statusMessage(): string {
     if (!this.booking) return '';
+    if (this.booking.status === 'CANCELLED') {
+      return 'Lượt đặt chỗ này đã được hủy và slot đã giải phóng.';
+    }
     if (this.booking.status === 'VERIFIED') {
       return 'Đã xác thực QR và nhận thẻ RFID! Hãy quẹt thẻ tại cổng vào để mở barrier.';
     }
@@ -94,37 +110,71 @@ export class ConfirmationComponent implements OnInit, OnDestroy {
     return 'Mã QR có hiệu lực 15 phút kể từ lúc đặt chỗ. Đèn tại slot đang sáng VÀNG chờ bạn đến.';
   }
 
-  ngOnInit(): void {
+  async ngOnInit(): Promise<void> {
     this.booking = this.bookingService.getBooking();
-    if (!this.booking) return;
-    this.updateTimers();
-    if (this.booking.qrCodeBase64) {
-      this.qrDataUrl = this.booking.qrCodeBase64;
-    } else {
-      QRCode.toDataURL(this.booking.qrCodeToken || this.booking.code, { width: 260, margin: 1, errorCorrectionLevel: 'M' })
-        .then(url => this.qrDataUrl = url)
-        .catch(() => this.qrDataUrl = '');
+    if (!this.booking) {
+      try {
+        const list = await this.bookingService.getMyBookings();
+        if (list.length > 0) {
+          this.booking = this.bookingService.setBookingFromApi(list[0]);
+        }
+      } catch {
+        // ignore
+      }
     }
+    if (!this.booking) return;
+
+    this.renderQr();
+    this.updateTimers();
+
     if (this.booking.bookingId) {
       this.bookingService.refreshBooking(this.booking.bookingId).then(b => {
         if (b) {
           this.booking = b;
-          if (b.qrCodeBase64) this.qrDataUrl = b.qrCodeBase64;
+          this.renderQr();
           this.updateTimers();
         }
       });
     }
     this.intervalId = setInterval(() => this.updateTimers(), 1000);
     this.wsSub = this.bookingService.events$.subscribe(msg => {
-      if (this.booking?.bookingId && ['BOOKING_VERIFIED', 'BOOKING_EXPIRED', 'GATE_EVENT'].includes(msg.event)) {
+      if (this.booking?.bookingId && ['BOOKING_VERIFIED', 'BOOKING_EXPIRED', 'BOOKING_CANCELLED', 'GATE_EVENT'].includes(msg.event)) {
         this.bookingService.refreshBooking(this.booking.bookingId).then(b => {
           if (b) {
             this.booking = b;
+            this.renderQr();
             this.updateTimers();
           }
         });
       }
     });
+  }
+
+  private renderQr(): void {
+    if (!this.booking) return;
+    if (this.booking.qrCodeBase64) {
+      this.qrDataUrl = this.booking.qrCodeBase64;
+    } else if (this.booking.qrCodeToken || this.booking.code) {
+      QRCode.toDataURL(this.booking.qrCodeToken || this.booking.code, { width: 260, margin: 1, errorCorrectionLevel: 'M' })
+        .then(url => {
+          this.qrDataUrl = url;
+          this.cdr.markForCheck();
+        })
+        .catch(() => this.qrDataUrl = '');
+    }
+  }
+
+  async cancelCurrentBooking(): Promise<void> {
+    if (!this.booking?.bookingId) return;
+    this.errorMessage = '';
+    try {
+      const res = await this.bookingService.cancelBooking(this.booking.bookingId);
+      this.booking = this.bookingService.setBookingFromApi(res);
+      this.updateTimers();
+    } catch (err: any) {
+      this.errorMessage = err?.error?.detail || 'Không thể hủy đặt chỗ.';
+      this.cdr.markForCheck();
+    }
   }
 
   private updateTimers(): void {
@@ -153,4 +203,3 @@ export class ConfirmationComponent implements OnInit, OnDestroy {
     this.auth.logout();
   }
 }
-

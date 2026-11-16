@@ -26,31 +26,45 @@ import { AuthService } from '../../services/auth.service';
         <small>Giải pháp bãi đỗ xe thông minh</small>
       </aside>
       <main class="auth-side">
-        <form class="auth-card" (ngSubmit)="submit()">
+        <form class="auth-card" (ngSubmit)="submit(emailInput.value, passwordInput.value)">
           <div class="eyebrow">CHÀO MỪNG TRỞ LẠI</div>
           <h1 style="font-size:32px">Đăng nhập</h1>
           <p class="lead">Đăng nhập bằng tài khoản Khách hàng, Bảo vệ hoặc Quản trị viên (Admin).</p>
 
           <div class="form-field">
             <label for="email">Email</label>
-            <input class="native-input" id="email" type="email" name="email" [(ngModel)]="email" placeholder="ban@example.com" autocomplete="email" required>
+            <input
+              #emailInput
+              class="native-input"
+              id="email"
+              type="email"
+              name="email"
+              [(ngModel)]="email"
+              (input)="email = emailInput.value"
+              (change)="email = emailInput.value"
+              placeholder="ban@example.com"
+              autocomplete="email"
+              required>
           </div>
           <div class="form-field">
             <label for="password">Mật khẩu</label>
             <div style="position:relative">
               <input
+                #passwordInput
                 class="native-input"
                 id="password"
                 name="password"
                 [type]="showPassword ? 'text' : 'password'"
                 [(ngModel)]="password"
+                (input)="password = passwordInput.value"
+                (change)="password = passwordInput.value"
                 placeholder="Nhập mật khẩu"
                 autocomplete="current-password"
                 style="padding-right:40px"
                 required>
               <button
                 type="button"
-                (click)="showPassword = !showPassword"
+                (click)="togglePassword(emailInput.value, passwordInput.value)"
                 style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:0;color:var(--muted);cursor:pointer">
                 <i class="pi" [ngClass]="showPassword ? 'pi-eye-slash' : 'pi-eye'"></i>
               </button>
@@ -66,6 +80,7 @@ import { AuthService } from '../../services/auth.service';
             class="full-button"
             icon="pi pi-arrow-right"
             iconPos="right"
+            (click)="submit(emailInput.value, passwordInput.value)"
             [disabled]="submitting">
             {{ submitting ? 'Đang đăng nhập...' : 'Đăng nhập' }}
           </button>
@@ -89,10 +104,21 @@ export class LoginComponent {
     private cdr: ChangeDetectorRef
   ) {}
 
-  async submit(): Promise<void> {
+  togglePassword(domEmail: string, domPassword: string): void {
+    this.email = domEmail || this.email;
+    this.password = domPassword || this.password;
+    this.showPassword = !this.showPassword;
+  }
+
+  async submit(domEmail?: string, domPassword?: string): Promise<void> {
     if (this.submitting) return;
     this.error = '';
-    if (!this.email.trim() || !this.password) {
+    const emailVal = (domEmail ?? this.email ?? '').trim();
+    const passVal = domPassword ?? this.password ?? '';
+    this.email = emailVal;
+    this.password = passVal;
+
+    if (!emailVal || !passVal) {
       this.error = 'Vui lòng nhập đầy đủ email và mật khẩu.';
       this.cdr.markForCheck();
       return;
@@ -100,7 +126,7 @@ export class LoginComponent {
     this.submitting = true;
     this.cdr.markForCheck();
     try {
-      const result = await this.auth.login(this.email.trim(), this.password);
+      const result = await this.auth.login(emailVal, passVal);
       if (!result.ok) {
         this.error = result.message;
         this.cdr.markForCheck();

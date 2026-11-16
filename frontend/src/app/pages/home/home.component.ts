@@ -37,7 +37,7 @@ import { ParkingLot } from '../../models/parking.models';
 
         <ng-container *ngIf="isLoggedIn; else loginButton">
           <span style="font-size:12px;color:var(--muted)">
-            {{ isAdmin ? '👑 Admin' : isGuard ? '🛡️ Bảo vệ' : '👤 ' + userName }}
+            {{ isAdmin ? 'Admin' : isGuard ? 'Bảo vệ' : '' + userName }}
           </span>
           <button
             pButton

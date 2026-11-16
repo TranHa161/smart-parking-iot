@@ -117,7 +117,7 @@ h3 { font-size: 16px; margin: 0 0 8px; }
 .panel { background: white; border: 1px solid var(--line); border-radius: 18px; padding: 24px; }
 .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .native-input { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid #cbd5dc; border-radius: 10px; background: white; color: var(--ink); }
-.slot-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 12px; }
+.slot-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 12px; }
 .slot-button { border: 1px solid #cbd5dc; background: white; padding: 13px 8px; border-radius: 10px; cursor: pointer; color: var(--ink); font-weight: 700; }
 .slot-button.selected { background: var(--brand-soft); border: 2px solid var(--brand); color: var(--brand-dark); }
 .slot-button:disabled { background: #f0f2f4; color: #a6b0b7; cursor: not-allowed; }
@@ -163,3 +163,5 @@ h3 { font-size: 16px; margin: 0 0 8px; }
   .step { font-size: 10px; flex-direction: column; text-align: center; gap: 4px; }
   .step-line { margin-bottom: 18px; }
 }
+#p-license-host { display: none !important; visibility: hidden !important; opacity: 0 !important; }
+

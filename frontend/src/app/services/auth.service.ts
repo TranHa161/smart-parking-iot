@@ -1,5 +1,5 @@
 import { Injectable } from '@angular/core';
-import { HttpClient, HttpHeaders } from '@angular/common/http';
+import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { BookingService } from './booking.service';
 
@@ -11,6 +11,8 @@ export interface SessionUser {
   email: string;
   phone: string;
   role: UserRole;
+  is_active?: boolean;
+  created_at?: string | null;
 }
 
 export interface AuthApiResponse {
@@ -38,13 +40,6 @@ export class AuthService {
       return detail.map((d: any) => d?.msg || JSON.stringify(d)).join(', ');
     }
     return fallback;
-  }
-
-  private authHeaders(): HttpHeaders {
-    const token = this.getToken();
-    return token
-      ? new HttpHeaders({ Authorization: `Bearer ${token}` })
-      : new HttpHeaders();
   }
 
   async register(
@@ -95,6 +90,9 @@ export class AuthService {
       );
       localStorage.setItem(this.tokenKey, res.access_token);
       localStorage.setItem(this.currentUserKey, JSON.stringify(res.user));
+      if (res.user.role === 'guard' || res.user.role === 'admin') {
+        this.bookingService.connectStaffWebSocket();
+      }
       return {
         ok: true,
         message: 'Đăng nhập thành công.',
@@ -108,12 +106,11 @@ export class AuthService {
     }
   }
 
-  async adminListUsers(): Promise<SessionUser[]> {
+  async adminListUsers(role?: UserRole): Promise<SessionUser[]> {
     const base = await this.bookingService.resolveApiBase();
+    const qs = role ? `?role=${role}` : '';
     return firstValueFrom(
-      this.http.get<SessionUser[]>(`${base}/api/auth/users`, {
-        headers: this.authHeaders(),
-      })
+      this.http.get<SessionUser[]>(`${base}/api/auth/users${qs}`)
     );
   }
 
@@ -122,18 +119,18 @@ export class AuthService {
     email: string;
     phone: string;
     password: string;
-    role: UserRole;
   }): Promise<{ ok: boolean; message: string; user?: SessionUser }> {
     try {
       const base = await this.bookingService.resolveApiBase();
       const user = await firstValueFrom(
-        this.http.post<SessionUser>(`${base}/api/auth/guards`, payload, {
-          headers: this.authHeaders(),
+        this.http.post<SessionUser>(`${base}/api/auth/guards`, {
+          ...payload,
+          role: 'guard',
         })
       );
       return {
         ok: true,
-        message: `Đã cấp tài khoản ${user.role === 'guard' ? 'Bảo vệ' : user.role} cho ${user.email} thành công!`,
+        message: `Đã cấp tài khoản Bảo vệ cho ${user.email} thành công!`,
         user,
       };
     } catch (err: any) {
@@ -144,30 +141,76 @@ export class AuthService {
     }
   }
 
-  async adminDeleteUser(
-    userId: number
-  ): Promise<{ ok: boolean; message: string }> {
+  async adminSetUserStatus(
+    userId: number,
+    isActive: boolean
+  ): Promise<{ ok: boolean; message: string; user?: SessionUser }> {
     try {
       const base = await this.bookingService.resolveApiBase();
-      await firstValueFrom(
-        this.http.delete(`${base}/api/auth/users/${userId}`, {
-          headers: this.authHeaders(),
+      const user = await firstValueFrom(
+        this.http.patch<SessionUser>(`${base}/api/auth/users/${userId}/status`, {
+          is_active: isActive,
         })
       );
-      return { ok: true, message: 'Đã thu hồi tài khoản thành công.' };
+      return {
+        ok: true,
+        message: isActive
+          ? `Đã mở khóa tài khoản ${user.email}.`
+          : `Đã khóa tài khoản ${user.email}.`,
+        user,
+      };
     } catch (err: any) {
       return {
         ok: false,
-        message: this.extractErrorMessage(err, 'Không thể xóa tài khoản.'),
+        message: this.extractErrorMessage(
+          err,
+          'Không thể cập nhật trạng thái tài khoản.'
+        ),
       };
     }
   }
 
+  async adminResetPassword(
+    userId: number,
+    newPassword: string
+  ): Promise<{ ok: boolean; message: string }> {
+    try {
+      const base = await this.bookingService.resolveApiBase();
+      await firstValueFrom(
+        this.http.post(`${base}/api/auth/users/${userId}/reset-password`, {
+          new_password: newPassword,
+        })
+      );
+      return {
+        ok: true,
+        message: 'Đã đặt lại mật khẩu thành công.',
+      };
+    } catch (err: any) {
+      return {
+        ok: false,
+        message: this.extractErrorMessage(
+          err,
+          'Không thể đặt lại mật khẩu.'
+        ),
+      };
+    }
+  }
+
+  async adminDeleteUser(
+    userId: number
+  ): Promise<{ ok: boolean; message: string }> {
+    const res = await this.adminSetUserStatus(userId, false);
+    return { ok: res.ok, message: res.message };
+  }
+
   getToken(): string | null {
-    return localStorage.getItem(this.tokenKey);
+    return typeof window !== 'undefined'
+      ? localStorage.getItem(this.tokenKey)
+      : null;
   }
 
   getCurrentUser(): SessionUser | null {
+    if (typeof window === 'undefined') return null;
     const raw = localStorage.getItem(this.currentUserKey);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
@@ -195,7 +238,10 @@ export class AuthService {
   }
 
   logout(): void {
-    localStorage.removeItem(this.currentUserKey);
-    localStorage.removeItem(this.tokenKey);
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem(this.currentUserKey);
+      localStorage.removeItem(this.tokenKey);
+    }
+    this.bookingService.disconnectStaffWebSocket();
   }
 }

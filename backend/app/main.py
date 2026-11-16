@@ -1,18 +1,18 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager, suppress
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.database import engine, AsyncSessionLocal
+from app.core.security import hash_password, is_staff, user_from_token
 from app.models.models import Slot, SlotStatus, User, UserRole
-from app.services.auth_service import hash_password
 from app.services.mqtt_service import mqtt_service
 from app.services.scheduler import start_booking_expiration_scheduler
 from app.api.websocket import ws_manager
-from app.api import routes_slots, routes_booking, routes_gate, routes_auth
+from app.api import routes_slots, routes_booking, routes_gate, routes_auth, routes_reports
 
 # Cấu hình logging
 logging.basicConfig(
@@ -23,32 +23,44 @@ logger = logging.getLogger("main")
 
 
 async def init_default_data():
-    """Khởi tạo 4 slot đỗ xe và tài khoản mặc định trong CSDL nếu chưa có"""
-    async with engine.begin() as conn:
-        await conn.run_sync(User.__table__.create, checkfirst=True)
-
+    """Khởi tạo các slot đỗ xe (mặc định 3 slot khớp STM32) và tài khoản khởi tạo nếu chưa có."""
     async with AsyncSessionLocal() as session:
         stmt = select(Slot)
         res = await session.execute(stmt)
         slots = res.scalars().all()
         if not slots:
-            logger.info("Chưa có slot đỗ nào. Đang khởi tạo 4 slot demo mặc định...")
+            count = settings.SLOT_COUNT
+            logger.info("Chưa có slot đỗ nào. Đang khởi tạo %d slot mặc định...", count)
             demo_slots = [
-                Slot(code="Slot 1", sensor_id="HCSR04_01", status=SlotStatus.AVAILABLE),
-                Slot(code="Slot 2", sensor_id="HCSR04_02", status=SlotStatus.AVAILABLE),
-                Slot(code="Slot 3", sensor_id="HCSR04_03", status=SlotStatus.AVAILABLE),
-                Slot(code="Slot 4", sensor_id="HCSR04_04", status=SlotStatus.AVAILABLE),
+                Slot(
+                    code=f"Slot {i}",
+                    sensor_id=f"HCSR04_{i:02d}",
+                    status=SlotStatus.AVAILABLE,
+                )
+                for i in range(1, count + 1)
             ]
             session.add_all(demo_slots)
             await session.commit()
-            logger.info("Đã khởi tạo thành công 4 slot: Slot 1, Slot 2, Slot 3, Slot 4.")
+            logger.info("Đã khởi tạo thành công %d slot.", count)
 
-        # Khởi tạo tài khoản Admin, Bảo vệ & Khách mặc định trong DB nếu chưa tồn tại
+        admin_pwd = settings.SEED_ADMIN_PASSWORD or "123456"
         default_accounts = [
-            ("Quản trị viên hệ thống", "admin@parking.com", "0988888888", "123456", UserRole.ADMIN.value),
-            ("Bảo vệ trực cổng", "guard@parking.com", "0911111111", "123456", UserRole.GUARD.value),
-            ("Khách hàng", "user@parking.com", "0900000000", "123456", UserRole.USER.value),
+            (
+                "Quản trị viên hệ thống",
+                settings.SEED_ADMIN_EMAIL.strip().lower(),
+                "0988888888",
+                admin_pwd,
+                UserRole.ADMIN.value,
+            ),
         ]
+        if settings.SEED_DEMO_USERS:
+            default_accounts.extend(
+                [
+                    ("Bảo vệ trực cổng", "guard@parking.com", "0911111111", "123456", UserRole.GUARD.value),
+                    ("Khách hàng", "user@parking.com", "0900000000", "123456", UserRole.USER.value),
+                ]
+            )
+
         added_users = False
         for name, email, phone, pwd, role in default_accounts:
             exists = await session.scalar(select(User).where(User.email == email))
@@ -60,22 +72,23 @@ async def init_default_data():
                         phone=phone,
                         password_hash=hash_password(pwd),
                         role=role,
+                        is_active=True,
                     )
                 )
                 added_users = True
-            elif exists.role != role and email in {"admin@parking.com", "guard@parking.com"}:
+            elif exists.role != role and role in {UserRole.ADMIN.value, UserRole.GUARD.value}:
                 exists.role = role
                 added_users = True
         if added_users:
             await session.commit()
-            logger.info("Đã khởi tạo tài khoản mặc định trong DB (admin@parking.com, guard@parking.com, user@parking.com).")
+            logger.info("Đã khởi tạo tài khoản mặc định trong DB.")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- KHỞI ĐỘNG (STARTUP) ---
     logger.info("Đang khởi động Smart Parking IoT Backend...")
-    
+
     # Apply schema changes explicitly with alembic before starting the app.
     from app.models.models import ParkingControl
     async with AsyncSessionLocal() as db:
@@ -124,6 +137,7 @@ app.include_router(routes_auth.router, prefix=settings.API_V1_STR)
 app.include_router(routes_slots.router, prefix=settings.API_V1_STR)
 app.include_router(routes_booking.router, prefix=settings.API_V1_STR)
 app.include_router(routes_gate.router, prefix=settings.API_V1_STR)
+app.include_router(routes_reports.router, prefix=settings.API_V1_STR)
 
 
 @app.get("/", tags=["Root"])
@@ -144,13 +158,39 @@ async def health_check():
 
 @app.websocket("/ws/parking")
 async def websocket_endpoint(websocket: WebSocket):
-    """Kênh WebSocket cập nhật thời gian thực cho Web Khách và Web Bảo vệ"""
-    await ws_manager.connect(websocket)
+    """Kênh WebSocket công khai cập nhật trạng thái slot thời gian thực (đã lọc dữ liệu nhạy cảm)."""
+    await ws_manager.connect(websocket, staff=False)
     try:
         while True:
-            # Lắng nghe ping/pong hoặc tin nhắn từ client nếu có
             data = await websocket.receive_text()
-            logger.info(f"WebSocket nhận từ client: {data}")
+            logger.info(f"WebSocket public nhận từ client: {data}")
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
 
+
+@app.websocket("/ws/staff")
+async def staff_websocket_endpoint(
+    websocket: WebSocket,
+    token: str = Query(default=""),
+):
+    """Kênh WebSocket nội bộ cho Bảo vệ & Admin (nhận đủ sự kiện quẹt thẻ, thu phí, override)."""
+    if not token:
+        await websocket.close(code=1008)
+        return
+    async with AsyncSessionLocal() as db:
+        try:
+            user = await user_from_token(db, token)
+        except HTTPException:
+            await websocket.close(code=1008)
+            return
+        if not is_staff(user):
+            await websocket.close(code=1008)
+            return
+
+    await ws_manager.connect(websocket, staff=True)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            logger.info(f"WebSocket staff nhận từ client ({user.email}): {data}")
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)

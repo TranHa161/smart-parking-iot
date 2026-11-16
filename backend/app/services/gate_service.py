@@ -4,41 +4,45 @@ from datetime import timedelta
 from fastapi import HTTPException
 from sqlalchemy import select
 from app.core.config import settings
-from app.models.models import (Booking, BookingStatus, RfidCard, ParkingSession,
+from app.models.models import (Booking, BookingStatus, GateEventType, RfidCard, ParkingSession,
                                PaymentStatus, SessionStatus, Slot)
+from app.services.audit import log_gate_event
 from app.services.booking_service import claim_available_slot, get_assignable_card
 from app.services.parking_state import state_transaction, expire_holds, sync_slot, dispatch
 from app.services.mqtt_service import mqtt_service
 
 
-async def register_card(card_uid):
+async def register_card(card_uid, actor_id=None):
     card_uid = card_uid.strip().upper()
     async with state_transaction() as db:
         existing = await db.scalar(select(RfidCard).where(RfidCard.card_uid == card_uid))
         if existing:
             raise HTTPException(409, "Thẻ đã được đăng ký")
         db.add(RfidCard(card_uid=card_uid, status="ACTIVE"))
+        log_gate_event(db, GateEventType.CARD_REGISTERED, actor_id=actor_id, card_uid=card_uid)
     return {"card_uid": card_uid, "status": "ACTIVE"}
 
 
-async def assign_walk_in(card_uid, slot_id=None):
+async def assign_walk_in(card_uid, slot_id=None, actor_id=None):
     events = []
     async with state_transaction() as db:
         await expire_holds(db, events)
         card = await get_assignable_card(db, card_uid)
         slot = await claim_available_slot(db, slot_id)
         card.status = "ASSIGNED"
-        parking = ParkingSession(card_uid=card.card_uid, slot_id=slot.id,
+        parking = ParkingSession(card_uid=card.card_uid, slot_id=slot.id, issued_by=actor_id,
                                  authorized_until=utc_now() + timedelta(minutes=settings.ENTRY_AUTHORIZATION_MINUTES))
         db.add(parking)
         await sync_slot(db, slot, events)
+        log_gate_event(db, GateEventType.WALK_IN_ISSUED, actor_id=actor_id, card_uid=card.card_uid,
+                       session_id=parking.id, detail=f"Khách vãng lai -> {slot.code}")
         result = {"success": True, "session_id": parking.id, "slot_id": slot.id,
                   "card_uid": card.card_uid, "authorized_until": parking.authorized_until.isoformat()}
     await dispatch(events)
     return result
 
 
-async def process_rfid_swipe(gate: str, card_uid: str):
+async def process_rfid_swipe(gate: str, card_uid: str, actor_id=None, source="DEVICE"):
     if gate not in {"IN", "OUT"}:
         raise HTTPException(422, "Cổng phải là IN hoặc OUT")
     card_uid = card_uid.strip().upper()
@@ -80,6 +84,8 @@ async def process_rfid_swipe(gate: str, card_uid: str):
                                   "card_uid": card_uid, "session_id": parking.id,
                                   "status": parking.status.value, "time_in": parking.time_in.isoformat()}
                         events.append(("GATE_EVENT", result))
+                        log_gate_event(db, GateEventType.ENTRY, actor_id=actor_id, source=source, gate="IN",
+                                       card_uid=card_uid, session_id=parking.id)
             elif parking.status in {SessionStatus.PARKING, SessionStatus.PAYMENT_PENDING}:
                 if parking.status == SessionStatus.PARKING:
                     now = utc_now()
@@ -87,6 +93,9 @@ async def process_rfid_swipe(gate: str, card_uid: str):
                     parking.total_fee = hours * settings.HOURLY_RATE
                     parking.exit_requested_at = now
                     parking.status = SessionStatus.PAYMENT_PENDING
+                    log_gate_event(db, GateEventType.EXIT_REQUESTED, actor_id=actor_id, source=source,
+                                   gate="OUT", card_uid=card_uid, session_id=parking.id,
+                                   detail=f"Phí {parking.total_fee} VND")
                 result = {"success": True, "session_id": parking.id, "card_uid": card_uid,
                           "status": parking.status.value, "total_fee": parking.total_fee,
                           "time_in": parking.time_in.isoformat(),
@@ -97,6 +106,10 @@ async def process_rfid_swipe(gate: str, card_uid: str):
                           "status": parking.status.value, "command_sent": False}
             else:
                 error = HTTPException(409, "Xe chưa quẹt thẻ vào")
+        if error:
+            # Transaction vẫn commit: lưu lại lần quẹt bị từ chối để admin đối soát.
+            log_gate_event(db, GateEventType.DENIED, actor_id=actor_id, source=source, gate=gate,
+                           card_uid=card_uid, detail=str(error.detail))
     await dispatch(events)
     if error:
         raise error
@@ -105,7 +118,7 @@ async def process_rfid_swipe(gate: str, card_uid: str):
     return result
 
 
-async def confirm_payment(session_id, guard_note=None):
+async def confirm_payment(session_id, guard_note=None, actor_id=None):
     events = []
     async with state_transaction() as db:
         parking = await db.get(ParkingSession, session_id)
@@ -122,6 +135,10 @@ async def confirm_payment(session_id, guard_note=None):
         parking.paid_at = utc_now()
         parking.guard_confirmed = True
         parking.guard_note = guard_note
+        parking.confirmed_by = actor_id
+        log_gate_event(db, GateEventType.PAYMENT_CONFIRMED, actor_id=actor_id, gate="OUT",
+                       card_uid=parking.card_uid, session_id=parking.id,
+                       detail=f"Thu {parking.total_fee} VND" + (f" — {guard_note}" if guard_note else ""))
         result = {"success": True, "duplicate": False, "session_id": parking.id,
                   "total_fee": parking.total_fee, "status": parking.status.value}
         events.append(("PAYMENT_CONFIRMED", result.copy()))
@@ -130,7 +147,7 @@ async def confirm_payment(session_id, guard_note=None):
     return result
 
 
-async def confirm_exit(session_id):
+async def confirm_exit(session_id, actor_id=None, source="WEB"):
     """Called by the device/guard after passage, separate from payment."""
     events = []
     async with state_transaction() as db:
@@ -149,5 +166,18 @@ async def confirm_exit(session_id):
         await sync_slot(db, await db.get(Slot, parking.slot_id), events)
         result = {"success": True, "duplicate": False, "session_id": parking.id}
         events.append(("VEHICLE_EXITED", result))
+        log_gate_event(db, GateEventType.VEHICLE_EXITED, actor_id=actor_id, source=source, gate="OUT",
+                       card_uid=parking.card_uid, session_id=parking.id)
     await dispatch(events)
     return result
+
+
+async def override_barrier(gate: str, action: str, duration_seconds: int, reason: str, actor_id=None):
+    """Mở/đóng barrier thủ công khi sự cố. Luôn ghi nhật ký kèm lý do và người thao tác."""
+    async with state_transaction() as db:
+        log_gate_event(db, GateEventType.BARRIER_OVERRIDE, actor_id=actor_id, gate=gate,
+                       detail=f"{action}: {reason}")
+    sent = mqtt_service.publish_barrier_command(gate, action, duration_seconds)
+    data = {"gate": gate, "action": action, "reason": reason, "actor_id": actor_id, "command_sent": sent}
+    await dispatch([("BARRIER_OVERRIDE", data)])
+    return {"success": True, **data}

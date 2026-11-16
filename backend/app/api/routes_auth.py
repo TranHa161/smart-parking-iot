@@ -1,23 +1,28 @@
-from typing import List
-from fastapi import APIRouter, Depends, Header
+from typing import List, Optional
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.security import get_current_user, require_admin
+from app.models.models import User
 from app.schemas.schemas import (
     AdminCreateUserRequest,
     AuthResponse,
+    PasswordChangeRequest,
+    PasswordResetRequest,
     UserLoginRequest,
     UserRegisterRequest,
     UserResponse,
+    UserStatusUpdate,
 )
 from app.services.auth_service import (
-    admin_create_user,
-    admin_delete_user,
+    admin_create_guard,
     admin_list_users,
-    get_current_user_from_header,
+    admin_reset_password,
+    admin_set_active,
+    change_own_password,
     login_user,
     register_user,
-    require_admin,
 )
 
 router = APIRouter(prefix="/auth", tags=["Auth - Đăng ký, Đăng nhập & Quản trị"])
@@ -25,7 +30,7 @@ router = APIRouter(prefix="/auth", tags=["Auth - Đăng ký, Đăng nhập & Qu�
 
 @router.post("/register", response_model=AuthResponse, status_code=201)
 async def register(payload: UserRegisterRequest, db: AsyncSession = Depends(get_db)):
-    """Khách hàng tự đăng ký tài khoản đặt chỗ (role luôn là 'user')"""
+    """Khách hàng tự đăng ký tài khoản đặt chỗ (role luôn là 'user')."""
     return await register_user(
         db,
         name=payload.name,
@@ -41,47 +46,74 @@ async def login(payload: UserLoginRequest, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/me", response_model=UserResponse)
-async def get_me(
-    authorization: str | None = Header(default=None),
+async def get_me(current_user: User = Depends(get_current_user)):
+    return current_user
+
+
+@router.post("/change-password")
+async def update_own_password(
+    payload: PasswordChangeRequest,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    return await get_current_user_from_header(db, authorization)
+    await change_own_password(db, current_user, payload.old_password, payload.new_password)
+    return {"success": True, "message": "Đã đổi mật khẩu thành công."}
 
 
 @router.get("/users", response_model=List[UserResponse])
 async def list_users(
-    authorization: str | None = Header(default=None),
+    role: Optional[str] = Query(default=None),
+    _admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """[Admin] Xem danh sách toàn bộ tài khoản (Admin, Bảo vệ, Khách hàng)"""
-    await require_admin(db, authorization)
-    return await admin_list_users(db)
+    """[Admin] Xem danh sách toàn bộ tài khoản (Admin, Bảo vệ, Khách hàng)."""
+    return await admin_list_users(db, role=role)
 
 
 @router.post("/guards", response_model=UserResponse, status_code=201)
 async def create_guard_account(
     payload: AdminCreateUserRequest,
-    authorization: str | None = Header(default=None),
+    _admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """[Admin] Cấp tài khoản cho Bảo vệ (hoặc tài khoản hệ thống theo role)"""
-    await require_admin(db, authorization)
-    return await admin_create_user(
+    """[Admin] Cấp tài khoản cho Bảo vệ trực cổng (role luôn là 'guard')."""
+    return await admin_create_guard(
         db,
         name=payload.name,
         email=payload.email,
         phone=payload.phone,
         password=payload.password,
-        role=payload.role,
     )
 
 
-@router.delete("/users/{user_id}")
-async def delete_user_account(
+@router.patch("/users/{user_id}/status", response_model=UserResponse)
+async def set_user_active_status(
     user_id: int,
-    authorization: str | None = Header(default=None),
+    payload: UserStatusUpdate,
+    admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """[Admin] Thu hồi / xóa tài khoản Bảo vệ hoặc Khách hàng"""
-    admin = await require_admin(db, authorization)
-    return await admin_delete_user(db, user_id=user_id, current_admin_id=admin.id)
+    """[Admin] Khóa / mở khóa tài khoản Bảo vệ hoặc Khách hàng (giữ nguyên lịch sử đối soát)."""
+    return await admin_set_active(db, user_id=user_id, is_active=payload.is_active, current_admin=admin)
+
+
+@router.post("/users/{user_id}/reset-password", response_model=UserResponse)
+async def reset_user_password_endpoint(
+    user_id: int,
+    payload: PasswordResetRequest,
+    _admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """[Admin] Đặt lại mật khẩu cho nhân viên bảo vệ hoặc khách hàng."""
+    return await admin_reset_password(db, user_id=user_id, new_password=payload.new_password)
+
+
+@router.delete("/users/{user_id}")
+async def delete_or_deactivate_user_account(
+    user_id: int,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """[Admin] Thu hồi quyền truy cập tài khoản (khóa tài khoản để bảo toàn khóa ngoại lịch sử)."""
+    target = await admin_set_active(db, user_id=user_id, is_active=False, current_admin=admin)
+    return {"deactivated_id": target.id, "email": target.email, "is_active": target.is_active}

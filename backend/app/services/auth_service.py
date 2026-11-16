@@ -1,195 +1,110 @@
-import base64
-import hashlib
-import hmac
-import json
 import re
-import secrets
-from datetime import timedelta
-from fastapi import HTTPException, Header
-from sqlalchemy import select
+
+from fastapi import HTTPException
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.time import utc_now
+from app.core.security import create_access_token, hash_password, verify_password
 from app.models.models import User, UserRole
 
-TOKEN_SECRET = "smart-parking-iot-secret-key-2026"
-PBKDF2_ITERATIONS = 100_000
+EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+PHONE_RE = re.compile(r"^\+?[0-9]{9,15}$")
 
 
-def hash_password(password: str, salt: str | None = None) -> str:
-    salt = salt or secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac(
-        "sha256",
-        password.encode("utf-8"),
-        salt.encode("utf-8"),
-        PBKDF2_ITERATIONS,
-    ).hex()
-    return f"{salt}${digest}"
-
-
-def verify_password(password: str, stored_hash: str) -> bool:
-    if "$" not in stored_hash:
-        return False
-    salt, _ = stored_hash.split("$", 1)
-    expected = hash_password(password, salt)
-    return hmac.compare_digest(expected, stored_hash)
-
-
-def create_access_token(user: User) -> str:
-    payload = {
-        "sub": user.id,
-        "email": user.email,
-        "role": user.role,
-        "exp": int((utc_now() + timedelta(days=7)).timestamp()),
-    }
-    raw = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
-    sig = hmac.new(TOKEN_SECRET.encode("utf-8"), raw.encode("ascii"), hashlib.sha256).hexdigest()
-    return f"{raw}.{sig}"
-
-
-def decode_access_token(token: str) -> dict:
-    try:
-        raw, sig = token.split(".", 1)
-        expected_sig = hmac.new(
-            TOKEN_SECRET.encode("utf-8"), raw.encode("ascii"), hashlib.sha256
-        ).hexdigest()
-        if not hmac.compare_digest(sig, expected_sig):
-            raise ValueError("Invalid signature")
-        payload = json.loads(base64.urlsafe_b64decode(raw.encode("ascii")).decode("utf-8"))
-        if payload.get("exp", 0) < int(utc_now().timestamp()):
-            raise ValueError("Token expired")
-        return payload
-    except Exception:
-        raise HTTPException(status_code=401, detail="Phiên đăng nhập không hợp lệ hoặc đã hết hạn.")
-
-
-async def register_user(
-    db: AsyncSession, name: str, email: str, phone: str, password: str
-) -> dict:
+def _clean_profile(name: str, email: str, phone: str, password: str) -> tuple[str, str, str]:
     clean_email = email.strip().lower()
     clean_name = name.strip()
     clean_phone = re.sub(r"[\s().-]", "", phone.strip())
     if not clean_name:
         raise HTTPException(status_code=422, detail="Vui lòng nhập họ và tên.")
-    if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", clean_email):
+    if not EMAIL_RE.match(clean_email):
         raise HTTPException(status_code=422, detail="Email không hợp lệ.")
-    if not re.match(r"^\+?[0-9]{9,15}$", clean_phone):
+    if not PHONE_RE.match(clean_phone):
         raise HTTPException(status_code=422, detail="Số điện thoại không hợp lệ (cần 9-15 chữ số).")
     if len(password) < 6:
         raise HTTPException(status_code=422, detail="Mật khẩu cần có ít nhất 6 ký tự.")
+    return clean_name, clean_email, clean_phone
 
-    existing = await db.scalar(select(User).where(User.email == clean_email))
-    if existing:
+
+async def _create_user(db: AsyncSession, name, email, phone, password, role) -> User:
+    clean_name, clean_email, clean_phone = _clean_profile(name, email, phone, password)
+    if await db.scalar(select(User).where(User.email == clean_email)):
         raise HTTPException(status_code=409, detail="Email này đã được đăng ký.")
-
-    user = User(
-        name=clean_name,
-        email=clean_email,
-        phone=clean_phone,
-        password_hash=hash_password(password),
-        role=UserRole.USER.value,
-    )
+    user = User(name=clean_name, email=clean_email, phone=clean_phone,
+                password_hash=hash_password(password), role=role, is_active=True)
     db.add(user)
     await db.commit()
     await db.refresh(user)
-    return {
-        "access_token": create_access_token(user),
-        "token_type": "bearer",
-        "user": user,
-    }
+    return user
+
+
+def _auth_response(user: User) -> dict:
+    return {"access_token": create_access_token(user), "token_type": "bearer", "user": user}
+
+
+async def register_user(db: AsyncSession, name: str, email: str, phone: str, password: str) -> dict:
+    """Đăng ký công khai: luôn là role 'user'."""
+    user = await _create_user(db, name, email, phone, password, UserRole.USER.value)
+    return _auth_response(user)
 
 
 async def login_user(db: AsyncSession, email: str, password: str) -> dict:
-    clean_email = email.strip().lower()
-    user = await db.scalar(select(User).where(User.email == clean_email))
+    user = await db.scalar(select(User).where(User.email == email.strip().lower()))
     if not user or not verify_password(password, user.password_hash):
         raise HTTPException(status_code=401, detail="Email hoặc mật khẩu chưa đúng.")
-    return {
-        "access_token": create_access_token(user),
-        "token_type": "bearer",
-        "user": user,
-    }
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Tài khoản đã bị khóa. Liên hệ quản trị viên.")
+    return _auth_response(user)
 
 
-async def get_current_user_from_header(
-    db: AsyncSession, authorization: str | None = Header(default=None)
-) -> User:
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Chưa đăng nhập.")
-    token = authorization.split(" ", 1)[1].strip()
-    payload = decode_access_token(token)
-    user = await db.get(User, payload.get("sub"))
-    if not user:
-        raise HTTPException(status_code=401, detail="Tài khoản không tồn tại.")
-    return user
+async def admin_create_guard(db: AsyncSession, name: str, email: str, phone: str, password: str) -> User:
+    """Admin cấp tài khoản bảo vệ. Tài khoản admin chỉ được tạo qua biến môi trường khi khởi động."""
+    return await _create_user(db, name, email, phone, password, UserRole.GUARD.value)
 
 
-async def require_admin(
-    db: AsyncSession, authorization: str | None = Header(default=None)
-) -> User:
-    user = await get_current_user_from_header(db, authorization)
-    if user.role != UserRole.ADMIN.value:
-        raise HTTPException(
-            status_code=403,
-            detail="Chỉ Quản trị viên (Admin) mới có quyền thực hiện thao tác này.",
-        )
-    return user
+async def admin_list_users(db: AsyncSession, role: str | None = None) -> list[User]:
+    query = select(User).order_by(User.id.asc())
+    if role:
+        query = query.where(User.role == role)
+    return list((await db.scalars(query)).all())
 
 
-async def admin_create_user(
-    db: AsyncSession,
-    name: str,
-    email: str,
-    phone: str,
-    password: str,
-    role: str = UserRole.GUARD.value,
-) -> User:
-    clean_email = email.strip().lower()
-    clean_name = name.strip()
-    clean_phone = re.sub(r"[\s().-]", "", phone.strip())
-    if not clean_name:
-        raise HTTPException(status_code=422, detail="Vui lòng nhập họ và tên.")
-    if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", clean_email):
-        raise HTTPException(status_code=422, detail="Email không hợp lệ.")
-    if not re.match(r"^\+?[0-9]{9,15}$", clean_phone):
-        raise HTTPException(status_code=422, detail="Số điện thoại không hợp lệ (cần 9-15 chữ số).")
-    if len(password) < 6:
-        raise HTTPException(status_code=422, detail="Mật khẩu cần có ít nhất 6 ký tự.")
-    if role not in {UserRole.USER.value, UserRole.GUARD.value, UserRole.ADMIN.value}:
-        raise HTTPException(status_code=422, detail="Vai trò không hợp lệ.")
-
-    existing = await db.scalar(select(User).where(User.email == clean_email))
-    if existing:
-        raise HTTPException(status_code=409, detail="Email này đã tồn tại trong hệ thống.")
-
-    user = User(
-        name=clean_name,
-        email=clean_email,
-        phone=clean_phone,
-        password_hash=hash_password(password),
-        role=role,
-    )
-    db.add(user)
-    await db.commit()
-    await db.refresh(user)
-    return user
-
-
-async def admin_list_users(db: AsyncSession) -> list[User]:
-    res = await db.execute(select(User).order_by(User.id.asc()))
-    return list(res.scalars().all())
-
-
-async def admin_delete_user(
-    db: AsyncSession, user_id: int, current_admin_id: int
-) -> dict:
-    if user_id == current_admin_id:
-        raise HTTPException(
-            status_code=400, detail="Không thể tự xóa tài khoản Admin đang đăng nhập."
-        )
+async def _get_target(db: AsyncSession, user_id: int) -> User:
     target = await db.get(User, user_id)
     if not target:
         raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản.")
-    await db.delete(target)
+    return target
+
+
+async def admin_set_active(db: AsyncSession, user_id: int, is_active: bool, current_admin: User) -> User:
+    target = await _get_target(db, user_id)
+    if target.id == current_admin.id and not is_active:
+        raise HTTPException(status_code=400, detail="Không thể tự khóa tài khoản đang đăng nhập.")
+    if target.role == UserRole.ADMIN.value and not is_active:
+        active_admins = await db.scalar(select(func.count()).select_from(User).where(
+            User.role == UserRole.ADMIN.value, User.is_active.is_(True)))
+        if active_admins <= 1:
+            raise HTTPException(status_code=400, detail="Phải còn ít nhất một quản trị viên hoạt động.")
+    target.is_active = is_active
     await db.commit()
-    return {"deleted_id": user_id, "email": target.email}
+    await db.refresh(target)
+    return target
+
+
+async def admin_reset_password(db: AsyncSession, user_id: int, new_password: str) -> User:
+    target = await _get_target(db, user_id)
+    if len(new_password) < 6:
+        raise HTTPException(status_code=422, detail="Mật khẩu cần có ít nhất 6 ký tự.")
+    target.password_hash = hash_password(new_password)
+    await db.commit()
+    await db.refresh(target)
+    return target
+
+
+async def change_own_password(db: AsyncSession, user: User, old_password: str, new_password: str) -> None:
+    if not verify_password(old_password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Mật khẩu hiện tại chưa đúng.")
+    if len(new_password) < 6:
+        raise HTTPException(status_code=422, detail="Mật khẩu cần có ít nhất 6 ký tự.")
+    user.password_hash = hash_password(new_password)
+    await db.commit()

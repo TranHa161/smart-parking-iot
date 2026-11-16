@@ -1,7 +1,8 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from app.models.models import Slot, SlotStatus
+from app.core.security import require_admin, require_staff
+from app.models.models import Slot, SlotStatus, User
 from app.schemas.schemas import SlotResponse, SlotCreate
 from app.services.parking_state import state_transaction, expire_holds, sync_slot, dispatch
 
@@ -19,7 +20,7 @@ async def get_all_slots():
 
 
 @router.post("", response_model=SlotResponse)
-async def create_slot(slot_in: SlotCreate):
+async def create_slot(slot_in: SlotCreate, _admin: User = Depends(require_admin)):
     try:
         async with state_transaction() as db:
             slot = Slot(code=slot_in.code, sensor_id=slot_in.sensor_id)
@@ -31,7 +32,11 @@ async def create_slot(slot_in: SlotCreate):
 
 
 @router.put("/{slot_id}/override")
-async def override_slot_status(slot_id: int, new_status: SlotStatus):
+async def override_slot_status(
+    slot_id: int,
+    new_status: SlotStatus,
+    _actor: User = Depends(require_staff),
+):
     events = []
     async with state_transaction() as db:
         slot = await db.get(Slot, slot_id)

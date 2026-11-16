@@ -15,12 +15,11 @@ import paho.mqtt.client as mqtt
 MQTT_HOST = "localhost"
 MQTT_PORT = 1883
 
-# Trạng thái giả lập của mô hình
+# Trạng thái giả lập của mô hình (3 slot khớp SLOT_COUNT=3 trên STM32)
 slots_state = {
     1: {"color": "GREEN", "occupied": False},
     2: {"color": "GREEN", "occupied": False},
     3: {"color": "GREEN", "occupied": False},
-    4: {"color": "GREEN", "occupied": False},
 }
 barrier_state = "CLOSED"
 
@@ -29,7 +28,7 @@ def on_connect(client, userdata, flags, rc, properties=None):
     if rc == 0:
         print("\n" + "="*60)
         print("✅ [MÔ PHỎNG PHẦN CỨNG] Đã kết nối MQTT Broker thành công!")
-        print(f"   Đang giả lập: Kit STM32F401RE + 4 Cảm biến HC-SR04 + Đèn LED + SG90")
+        print(f"   Đang giả lập: Kit STM32F401RE + 3 Cảm biến HC-SR04 + Đèn LED + SG90")
         print("="*60)
         # Đăng ký nhận lệnh từ Backend gửi xuống
         client.subscribe("parking/gate/barrier_cmd")

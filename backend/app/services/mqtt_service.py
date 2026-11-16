@@ -12,6 +12,8 @@ class MQTTService:
     def __init__(self):
         self.client: Optional[mqtt.Client] = None
         self.is_connected = False
+        self.gateway_online = False
+        self.gateway_last_seen = None
         self.loop: Optional[asyncio.AbstractEventLoop] = None
 
     def set_event_loop(self, loop: asyncio.AbstractEventLoop):
@@ -123,11 +125,24 @@ class MQTTService:
 
     async def _handle_gateway_text(self, topic: str, line: str):
         """Xử lý giao thức dòng lệnh từ ESP32 Gateway (parking/gate/up, parking/gate/status)."""
+        from app.core.time import utc_now
+        from app.api.websocket import ws_manager
+
         if topic == "parking/gate/status":
             logger.info("Trạng thái ESP32 Gateway: %s", line)
-            if line.lower() == "online":
+            online = line.strip().lower() == "online"
+            self.gateway_online = online
+            self.gateway_last_seen = utc_now()
+            await ws_manager.broadcast(
+                "GATEWAY_STATUS",
+                {"online": self.gateway_online, "last_seen": self.gateway_last_seen.isoformat()},
+            )
+            if online:
                 await self._sync_reserved_slots_to_gateway()
             return
+
+        self.gateway_online = True
+        self.gateway_last_seen = utc_now()
 
         if line == "BOOT":
             logger.info("STM32 khởi động (BOOT) -> đồng bộ trạng thái giữ chỗ xuống mạch")
@@ -145,19 +160,20 @@ class MQTTService:
         from app.models.models import Slot, SlotStatus
 
         events = []
-        reserved_ids = []
+        reserved_indices = []
         async with state_transaction() as db:
             await expire_holds(db, events)
             slots = (await db.scalars(select(Slot).order_by(Slot.id))).all()
-            for slot in slots:
+            for idx, slot in enumerate(slots, start=1):
                 if slot.status == SlotStatus.RESERVED and not slot.physical_occupied:
-                    reserved_ids.append(slot.id)
+                    reserved_indices.append(idx)
         await dispatch(events)
-        for sid in reserved_ids:
-            self.publish_gateway_down(f"RESERVE:{sid}")
+        for idx in reserved_indices:
+            self.publish_gateway_down(f"RESERVE:{idx}")
 
     async def _handle_gateway_slots(self, raw_values: str):
         """Cập nhật trạng thái cảm biến từ bản tin SLOTS:s1,s2,s3 (0=AVAILABLE, 1=RESERVED, 2=OCCUPIED)."""
+        from sqlalchemy import select
         from app.services.parking_state import state_transaction, expire_holds, sync_slot, dispatch
         from app.models.models import Slot, SlotStatus
 
@@ -172,8 +188,16 @@ class MQTTService:
         fixup_commands = []
         async with state_transaction() as db:
             await expire_holds(db, events)
+            ordered_slots = (await db.scalars(select(Slot).order_by(Slot.id))).all()
+            by_code = {s.code.lower(): s for s in ordered_slots if s.code}
+            by_sensor = {s.sensor_id.upper(): s for s in ordered_slots if s.sensor_id}
             for idx, code in enumerate(codes, start=1):
-                slot = await db.get(Slot, idx)
+                slot = (
+                    by_sensor.get(f"HCSR04_{idx:02d}")
+                    or by_code.get(f"slot {idx}")
+                    or by_code.get(f"a{idx}")
+                    or (ordered_slots[idx - 1] if idx <= len(ordered_slots) else None)
+                )
                 if not slot:
                     continue
                 occupied = (code == 2)
@@ -184,9 +208,9 @@ class MQTTService:
                 elif not occupied:
                     # Đồng bộ lại cờ giữ chỗ trên STM32 nếu lệch với DB
                     if slot.status == SlotStatus.RESERVED and code == 0:
-                        fixup_commands.append(f"RESERVE:{slot.id}")
+                        fixup_commands.append(f"RESERVE:{idx}")
                     elif slot.status == SlotStatus.AVAILABLE and code == 1:
-                        fixup_commands.append(f"CANCEL:{slot.id}")
+                        fixup_commands.append(f"CANCEL:{idx}")
         await dispatch(events)
         for cmd in fixup_commands:
             self.publish_gateway_down(cmd)

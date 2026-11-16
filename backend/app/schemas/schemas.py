@@ -28,8 +28,11 @@ class SlotResponse(SlotBase):
 
 # ---------------- BOOKINGS ----------------
 class BookingCreate(BaseModel):
-    phone_number: str = Field(..., pattern=r"^\+?[0-9]{9,15}$", description="Số điện thoại của khách đặt")
+    phone_number: Optional[str] = Field(None, pattern=r"^\+?[0-9]{9,15}$",
+                                        description="Bỏ trống để dùng SĐT trong hồ sơ tài khoản")
     slot_id: Optional[int] = Field(None, gt=0, description="Bỏ trống để tự chọn slot")
+    license_plate: Optional[Annotated[str, StringConstraints(strip_whitespace=True, to_upper=True,
+                                                             max_length=20)]] = None
 
 
 class BookingResponse(BaseModel):
@@ -37,7 +40,9 @@ class BookingResponse(BaseModel):
     phone_number: str
     slot_id: int
     slot_code: Optional[str] = None
-    qr_code_token: str
+    user_id: Optional[int] = None
+    license_plate: Optional[str] = None
+    qr_code_token: Optional[str] = None
     qr_code_base64: Optional[str] = None
     status: BookingStatus
     created_at: datetime
@@ -75,6 +80,8 @@ class BarrierControlRequest(BaseModel):
     action: Literal["OPEN", "CLOSE"] = "OPEN"
     gate: Literal["IN", "OUT"] = "IN"
     duration_seconds: int = Field(5, ge=1, le=30)
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=3, max_length=255)] = Field(
+        ..., description="Lý do mở cổng thủ công (bắt buộc, được ghi vào nhật ký)")
 
 
 # ---------------- PARKING SESSIONS & PAYMENT ----------------
@@ -92,6 +99,8 @@ class ParkingSessionResponse(BaseModel):
     total_fee: int
     payment_status: PaymentStatus
     guard_confirmed: bool
+    issued_by: Optional[int] = None
+    confirmed_by: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -117,11 +126,25 @@ class UserRegisterRequest(BaseModel):
 
 
 class AdminCreateUserRequest(BaseModel):
+    """Admin chỉ cấp tài khoản bảo vệ; admin được tạo qua biến môi trường, khách tự đăng ký."""
     name: str = Field(..., min_length=1, max_length=100)
     email: str = Field(..., min_length=3, max_length=120)
     phone: str = Field(..., min_length=9, max_length=20)
     password: str = Field(..., min_length=6, max_length=128)
-    role: Literal["guard", "user", "admin"] = "guard"
+    role: Literal["guard"] = "guard"
+
+
+class UserStatusUpdate(BaseModel):
+    is_active: bool
+
+
+class PasswordResetRequest(BaseModel):
+    new_password: str = Field(..., min_length=6, max_length=128)
+
+
+class PasswordChangeRequest(BaseModel):
+    old_password: str = Field(..., min_length=1, max_length=128)
+    new_password: str = Field(..., min_length=6, max_length=128)
 
 
 class UserLoginRequest(BaseModel):
@@ -135,6 +158,8 @@ class UserResponse(BaseModel):
     email: str
     phone: str
     role: Literal["user", "guard", "admin"]
+    is_active: bool = True
+    created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -144,3 +169,17 @@ class AuthResponse(BaseModel):
     token_type: str = "bearer"
     user: UserResponse
 
+
+
+# ---------------- GATE EVENTS (nhật ký) ----------------
+class GateEventResponse(BaseModel):
+    id: int
+    created_at: datetime
+    actor_id: Optional[int] = None
+    actor_name: Optional[str] = None
+    source: str
+    event_type: str
+    gate: Optional[str] = None
+    card_uid: Optional[str] = None
+    session_id: Optional[int] = None
+    detail: Optional[str] = None

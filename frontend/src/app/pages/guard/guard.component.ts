@@ -280,10 +280,26 @@ export class GuardComponent implements OnInit, OnDestroy {
     this.bookingService.connectStaffWebSocket();
     this.refreshAll();
     this.wsSub = this.bookingService.events$.subscribe((msg) => {
-      if (msg.event === 'PAYMENT_REQUIRED') {
+      if (msg.event === 'RFID_SCANNED') {
+        const scannedUid = msg.data?.card_uid || '';
+        if (scannedUid) {
+          this.verifyCardUid = scannedUid;
+          this.newCardUid = scannedUid;
+          this.walkInCardUid = scannedUid;
+          this.swipeCardUid = scannedUid;
+          this.bannerMessage = `🪪 Đã nhận thẻ RFID từ đầu đọc RC522: ${scannedUid} (Đã tự động điền vào ô UID!)`;
+        }
+      } else if (msg.event === 'PAYMENT_REQUIRED') {
         this.bannerMessage = `🔔 Yêu cầu thanh toán phiên #${msg.data?.session_id} (Thẻ ${msg.data?.card_uid}): ${msg.data?.total_fee?.toLocaleString()}đ`;
       } else if (msg.event === 'GATE_DENIED') {
-        this.errorMessage = `⛔ Từ chối thẻ ${msg.data?.card_uid}: ${msg.data?.reason}`;
+        const scannedUid = msg.data?.card_uid || '';
+        if (scannedUid) {
+          this.verifyCardUid = scannedUid;
+          this.newCardUid = scannedUid;
+          this.walkInCardUid = scannedUid;
+          this.swipeCardUid = scannedUid;
+        }
+        this.errorMessage = `⛔ Thẻ ${scannedUid} chưa được cấp quyền vào (${msg.data?.reason}) -> Đã tự động điền mã "${scannedUid}" vào các ô bên dưới để bạn cấp thẻ!`;
       } else if (msg.event === 'GATEWAY_STATUS') {
         if (this.gatewayStatus) {
           this.gatewayStatus.gateway_online = !!msg.data?.online;

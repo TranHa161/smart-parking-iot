@@ -26,8 +26,8 @@ logger = logging.getLogger("security")
 if settings.SECRET_KEY:
     _SECRET = settings.SECRET_KEY
 else:
-    _SECRET = secrets.token_hex(32)
-    logger.warning("SECRET_KEY chưa được cấu hình: dùng khóa tạm, token sẽ mất hiệu lực khi restart backend.")
+    _SECRET = "smart-parking-iot-dev-secret-key-2026"
+    logger.warning("SECRET_KEY chưa được cấu hình trong .env: đang dùng khóa dev mặc định.")
 
 PBKDF2_ITERATIONS = 100_000
 

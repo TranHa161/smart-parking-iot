@@ -175,15 +175,18 @@ async def staff_websocket_endpoint(
 ):
     """Kênh WebSocket nội bộ cho Bảo vệ & Admin (nhận đủ sự kiện quẹt thẻ, thu phí, override)."""
     if not token:
+        await websocket.accept()
         await websocket.close(code=1008)
         return
     async with AsyncSessionLocal() as db:
         try:
             user = await user_from_token(db, token)
         except HTTPException:
+            await websocket.accept()
             await websocket.close(code=1008)
             return
         if not is_staff(user):
+            await websocket.accept()
             await websocket.close(code=1008)
             return
 

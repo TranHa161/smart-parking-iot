@@ -1,11 +1,20 @@
+import glob
 import json
 import logging
 import asyncio
+import os
+import re
+import select
+import threading
 from typing import Optional
 import paho.mqtt.client as mqtt
 from app.core.config import settings
 
 logger = logging.getLogger("mqtt")
+
+_SLOTS_RE = re.compile(r"SLOTS:([0-2](?:\s*,\s*[0-2])+)")
+_RFID_RE = re.compile(r"(?:RFID:|UID:\s*)([0-9A-Fa-f]{4,32})")
+_SENSOR_CM_RE = re.compile(r"\[SENSOR\]\s*Xac nhan Slot\s*(\d+):.*?\(Khoang cach:\s*(\d+)\s*cm\)")
 
 
 class MQTTService:
@@ -14,7 +23,12 @@ class MQTTService:
         self.is_connected = False
         self.gateway_online = False
         self.gateway_last_seen = None
+        self.last_scanned_uid: Optional[str] = None
         self.loop: Optional[asyncio.AbstractEventLoop] = None
+        self._serial_stop = False
+        self._serial_thread: Optional[threading.Thread] = None
+        self._serial_fds: dict[str, int] = {}
+        self._serial_lock = threading.Lock()
 
     def set_event_loop(self, loop: asyncio.AbstractEventLoop):
         self.loop = loop
@@ -23,9 +37,9 @@ class MQTTService:
         try:
             # Hỗ trợ cả Paho MQTT v1 và v2
             try:
-                self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="fastapi_backend")
+                self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
             except AttributeError:
-                self.client = mqtt.Client(client_id="fastapi_backend")
+                self.client = mqtt.Client()
 
             if settings.MQTT_USERNAME:
                 self.client.username_pw_set(settings.MQTT_USERNAME, settings.MQTT_PASSWORD)
@@ -43,12 +57,197 @@ class MQTTService:
             self.client.loop_start()
         except Exception as e:
             logger.warning(f"Không thể kết nối MQTT Broker lúc này: {e}. Hệ thống vẫn chạy ở chế độ offline/giả lập.")
+        self._start_usb_serial_bridge()
 
     def disconnect(self):
+        self._serial_stop = True
+        with self._serial_lock:
+            for port, fd in list(self._serial_fds.items()):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            self._serial_fds.clear()
         if self.client:
             self.client.loop_stop()
             self.client.disconnect()
             logger.info("Đã ngắt kết nối MQTT Broker.")
+
+    def _start_usb_serial_bridge(self):
+        """Tự động đọc/ghi trực tiếp cổng USB Serial của ESP32/STM32 nếu cắm vào máy tính."""
+        if self._serial_thread and self._serial_thread.is_alive():
+            return
+        self._serial_stop = False
+        self._serial_thread = threading.Thread(target=self._usb_serial_loop, daemon=True)
+        self._serial_thread.start()
+
+    @staticmethod
+    def _discover_serial_ports() -> list[str]:
+        patterns = (
+            "/dev/cu.usbserial*",
+            "/dev/cu.wchusbserial*",
+            "/dev/cu.SLAB_USBtoUART*",
+            "/dev/cu.usbmodem*",
+            "/dev/ttyUSB*",
+            "/dev/ttyACM*",
+        )
+        found: list[str] = []
+        for pat in patterns:
+            found.extend(glob.glob(pat))
+        return sorted(set(found))
+
+    @staticmethod
+    def _open_serial_115200(port: str) -> Optional[int]:
+        try:
+            import termios
+            fd = os.open(port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+            attrs = termios.tcgetattr(fd)
+            attrs[0] = 0
+            attrs[1] = 0
+            attrs[2] = termios.CS8 | termios.CREAD | termios.CLOCAL
+            attrs[3] = 0
+            attrs[4] = termios.B115200
+            attrs[5] = termios.B115200
+            termios.tcsetattr(fd, termios.TCSANOW, attrs)
+            return fd
+        except Exception:
+            return None
+
+    def _usb_serial_loop(self):
+        buffers: dict[str, str] = {}
+        last_scan = 0.0
+        import time
+
+        while not self._serial_stop:
+            now = time.monotonic()
+            if now - last_scan >= 2.5:
+                last_scan = now
+                for port in self._discover_serial_ports():
+                    with self._serial_lock:
+                        already = port in self._serial_fds
+                    if not already:
+                        fd = self._open_serial_115200(port)
+                        if fd is not None:
+                            with self._serial_lock:
+                                self._serial_fds[port] = fd
+                            buffers[port] = ""
+                            logger.info("🔌 [USB Serial] Đã kết nối trực tiếp mạch phần cứng tại %s (115200)", port)
+                            if self.loop:
+                                asyncio.run_coroutine_threadsafe(
+                                    self._handle_gateway_text("parking/gate/status", "online"),
+                                    self.loop,
+                                )
+
+            with self._serial_lock:
+                items = list(self._serial_fds.items())
+
+            if not items:
+                time.sleep(1.5)
+                continue
+
+            fds = [fd for _, fd in items]
+            fd_to_port = {fd: port for port, fd in items}
+            try:
+                readable, _, _ = select.select(fds, [], [], 0.3)
+            except Exception:
+                time.sleep(0.5)
+                continue
+
+            for fd in readable:
+                port = fd_to_port.get(fd, "")
+                try:
+                    chunk = os.read(fd, 512)
+                    if not chunk:
+                        raise OSError("EOF")
+                except BlockingIOError:
+                    continue
+                except OSError:
+                    logger.warning("🔌 [USB Serial] Mất kết nối cổng %s", port)
+                    with self._serial_lock:
+                        self._serial_fds.pop(port, None)
+                    buffers.pop(port, None)
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+                    continue
+
+                buf = buffers.get(port, "") + chunk.decode("utf-8", errors="ignore")
+                while "\n" in buf or "\r" in buf:
+                    sep_idx = min(
+                        [i for i in (buf.find("\n"), buf.find("\r")) if i != -1]
+                    )
+                    line = buf[:sep_idx].strip()
+                    buf = buf[sep_idx + 1 :]
+                    if line:
+                        self._process_serial_line(line)
+                buffers[port] = buf[-256:]
+
+    def _process_serial_line(self, line: str):
+        if not self.loop:
+            return
+        # Bỏ qua các dòng echo hướng xuống từ máy tính hoặc server
+        if line.startswith("[DOWN]") or line.startswith("[PC -> STM32]") or line.startswith("[RX <- ESP32]"):
+            return
+
+        m_slots = _SLOTS_RE.search(line)
+        if m_slots:
+            cmd = f"SLOTS:{m_slots.group(1).replace(' ', '')}"
+            fut = asyncio.run_coroutine_threadsafe(
+                self._handle_gateway_text("parking/gate/up", cmd), self.loop
+            )
+            fut.add_done_callback(self._report_result)
+            return
+
+        m_rfid = _RFID_RE.search(line)
+        if m_rfid and ("RFID:" in line or "[RFID]" in line):
+            cmd = f"RFID:{m_rfid.group(1).upper()}"
+            logger.info("🔌 [USB Serial] Nhận quẹt thẻ từ mạch: %s", cmd)
+            fut = asyncio.run_coroutine_threadsafe(
+                self._handle_gateway_text("parking/gate/up", cmd), self.loop
+            )
+            fut.add_done_callback(self._report_result)
+            return
+
+        m_cm = _SENSOR_CM_RE.search(line)
+        if m_cm:
+            slot_idx = int(m_cm.group(1))
+            cm_val = float(m_cm.group(2))
+            fut = asyncio.run_coroutine_threadsafe(
+                self._update_slot_distance_only(slot_idx, cm_val), self.loop
+            )
+            fut.add_done_callback(self._report_result)
+            return
+
+        if line == "BOOT" or line.endswith(" BOOT"):
+            fut = asyncio.run_coroutine_threadsafe(
+                self._handle_gateway_text("parking/gate/up", "BOOT"), self.loop
+            )
+            fut.add_done_callback(self._report_result)
+
+    async def _update_slot_distance_only(self, slot_idx: int, cm_val: float):
+        from sqlalchemy import select
+        from app.services.parking_state import state_transaction, dispatch
+        from app.models.models import Slot
+
+        events = []
+        async with state_transaction() as db:
+            ordered = (await db.scalars(select(Slot).order_by(Slot.id))).all()
+            if 1 <= slot_idx <= len(ordered):
+                slot = ordered[slot_idx - 1]
+                slot.distance_cm = cm_val
+                events.append(
+                    (
+                        "SLOT_UPDATED",
+                        {
+                            "id": slot.id,
+                            "code": slot.code,
+                            "status": slot.status.value,
+                            "distance_cm": slot.distance_cm,
+                        },
+                    )
+                )
+        await dispatch(events)
 
     def _on_connect(self, client, userdata, flags, rc, properties=None):
         if rc == 0:
@@ -228,6 +427,9 @@ class MQTTService:
         if not card_uid:
             raise ValueError("Empty RFID UID")
 
+        self.last_scanned_uid = card_uid
+        await ws_manager.broadcast("RFID_SCANNED", {"card_uid": card_uid})
+
         async with parking_state.AsyncSessionLocal() as db:
             active_session = await db.scalar(
                 select(ParkingSession).where(
@@ -258,14 +460,27 @@ class MQTTService:
             self.publish_gateway_down(f"FEE:{result['total_fee']}")
 
     def publish_gateway_down(self, command: str) -> bool:
-        """Gửi dòng lệnh text xuống ESP32/STM32 qua topic parking/gate/down."""
+        """Gửi dòng lệnh text xuống ESP32/STM32 qua cả MQTT (parking/gate/down) và USB Serial."""
         topic = "parking/gate/down"
+        sent = False
         if self.client and self.is_connected:
             info = self.client.publish(topic, command, qos=1)
             logger.info("Đã phát MQTT tới [%s]: %s", topic, command)
-            return info.rc == mqtt.MQTT_ERR_SUCCESS
-        logger.info("[Offline Mode] Lệnh xuống Gateway [%s]: %s", topic, command)
-        return False
+            sent = info.rc == mqtt.MQTT_ERR_SUCCESS
+
+        with self._serial_lock:
+            serial_items = list(self._serial_fds.items())
+        for port, fd in serial_items:
+            try:
+                os.write(fd, f"{command}\n".encode("utf-8"))
+                logger.info("🔌 [USB Serial -> %s]: %s", port, command)
+                sent = True
+            except OSError:
+                pass
+
+        if not sent:
+            logger.info("[Offline Mode] Lệnh xuống Gateway [%s]: %s", topic, command)
+        return sent
 
     def publish_barrier_command(self, gate: str = "IN", action: str = "OPEN", duration_seconds: int = 5):
         """Gửi lệnh mở/đóng động cơ Servo Barrier (hỗ trợ cả JSON Simulator và Text Gateway)"""

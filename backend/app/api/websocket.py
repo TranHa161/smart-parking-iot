@@ -8,9 +8,9 @@ logger = logging.getLogger("websocket")
 # Sự kiện được phát cho mọi trình duyệt (trang khách). Dữ liệu được lọc bỏ trường nhạy cảm.
 PUBLIC_EVENTS = {
     "SLOT_UPDATED", "BOOKING_EXPIRED", "BOOKING_CANCELLED", "BOOKING_VERIFIED",
-    "ENTRY_EXPIRED", "VEHICLE_EXITED", "GATE_EVENT",
+    "ENTRY_EXPIRED", "VEHICLE_EXITED", "GATE_EVENT", "RFID_SCANNED",
 }
-SENSITIVE_KEYS = {"card_uid", "phone_number", "total_fee", "reason", "actor_id", "license_plate"}
+SENSITIVE_KEYS = {"phone_number", "total_fee", "reason", "actor_id", "license_plate"}
 
 
 def _public_view(data: Any) -> Any:

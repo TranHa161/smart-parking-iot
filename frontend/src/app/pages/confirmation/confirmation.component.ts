@@ -95,6 +95,15 @@ export class ConfirmationComponent implements OnInit, OnDestroy {
 
   get statusMessage(): string {
     if (!this.booking) return '';
+    if (this.booking.sessionStatus === 'EXITED') {
+      return '🏁 Xe đã thanh toán và rời khỏi bãi. Lượt gửi xe đã hoàn tất!';
+    }
+    if (this.booking.sessionStatus === 'PAYMENT_PENDING') {
+      return '💳 Xe đã quẹt thẻ tại cổng ra và đang chờ thanh toán phí gửi xe.';
+    }
+    if (this.booking.sessionStatus === 'PAID') {
+      return '✅ Đã xác nhận thanh toán! Barrier cổng ra đang mở.';
+    }
     if (this.booking.status === 'CANCELLED') {
       return 'Lượt đặt chỗ này đã được hủy và slot đã giải phóng.';
     }
@@ -138,7 +147,7 @@ export class ConfirmationComponent implements OnInit, OnDestroy {
     }
     this.intervalId = setInterval(() => this.updateTimers(), 1000);
     this.wsSub = this.bookingService.events$.subscribe(msg => {
-      if (this.booking?.bookingId && ['BOOKING_VERIFIED', 'BOOKING_EXPIRED', 'BOOKING_CANCELLED', 'GATE_EVENT'].includes(msg.event)) {
+      if (this.booking?.bookingId && ['BOOKING_VERIFIED', 'BOOKING_EXPIRED', 'BOOKING_CANCELLED', 'GATE_EVENT', 'VEHICLE_EXITED'].includes(msg.event)) {
         this.bookingService.refreshBooking(this.booking.bookingId).then(b => {
           if (b) {
             this.booking = b;

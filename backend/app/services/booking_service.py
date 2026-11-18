@@ -19,7 +19,7 @@ def generate_qr_base64(data: str) -> str:
     return "data:image/png;base64," + base64.b64encode(buffered.getvalue()).decode("ascii")
 
 
-def booking_response(booking, slot):
+def booking_response(booking, slot, session: ParkingSession | None = None):
     remaining = max(0, int((booking.expires_at - utc_now()).total_seconds()))
     pending = booking.status == BookingStatus.PENDING
     return {"id": booking.id, "phone_number": booking.phone_number,
@@ -28,9 +28,14 @@ def booking_response(booking, slot):
             "qr_code_token": booking.qr_code_token,
             # Ảnh QR chỉ cần khi vé còn chờ quét
             "qr_code_base64": generate_qr_base64(booking.qr_code_token) if pending else None,
-            "status": booking.status, "created_at": booking.created_at,
+            "status": booking.status,
+            "session_status": session.status if session else None,
+            "total_fee": session.total_fee if session else None,
+            "time_in": session.time_in if session else None,
+            "time_out": session.time_out if session else None,
+            "created_at": booking.created_at,
             "expires_at": booking.expires_at,
-            "remaining_seconds": remaining if booking.status == BookingStatus.PENDING else 0}
+            "remaining_seconds": remaining if pending else 0}
 
 
 async def claim_available_slot(db, slot_id=None):
@@ -98,7 +103,9 @@ async def get_booking(booking_id, viewer_id: int | None = None, viewer_is_staff:
         booking = await db.get(Booking, booking_id)
         if not booking or (not viewer_is_staff and booking.user_id != viewer_id):
             raise HTTPException(404, "Không tìm thấy lượt đặt")
-        result = booking_response(booking, await db.get(Slot, booking.slot_id))
+        slot = await db.get(Slot, booking.slot_id)
+        session = await db.scalar(select(ParkingSession).where(ParkingSession.booking_id == booking.id))
+        result = booking_response(booking, slot, session)
     await dispatch(events)
     return result
 
@@ -107,10 +114,15 @@ async def list_user_bookings(user_id: int, limit: int = 20):
     events = []
     async with state_transaction() as db:
         await expire_holds(db, events)
-        rows = (await db.execute(select(Booking, Slot).join(Slot, Booking.slot_id == Slot.id)
-                                 .where(Booking.user_id == user_id)
-                                 .order_by(Booking.id.desc()).limit(limit))).all()
-        result = [booking_response(b, s) for b, s in rows]
+        rows = (await db.execute(
+            select(Booking, Slot, ParkingSession)
+            .join(Slot, Booking.slot_id == Slot.id)
+            .outerjoin(ParkingSession, ParkingSession.booking_id == Booking.id)
+            .where(Booking.user_id == user_id)
+            .order_by(Booking.id.desc())
+            .limit(limit)
+        )).all()
+        result = [booking_response(b, s, ps) for b, s, ps in rows]
     await dispatch(events)
     return result
 

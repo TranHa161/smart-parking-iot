@@ -21,6 +21,10 @@ export interface BookingApiResponse {
   qr_code_token?: string | null;
   qr_code_base64?: string | null;
   status: BookingStatus;
+  session_status?: SessionStatus | null;
+  total_fee?: number | null;
+  time_in?: string | null;
+  time_out?: string | null;
   created_at: string;
   expires_at: string;
   remaining_seconds: number;
@@ -62,6 +66,8 @@ export interface Booking {
   phoneNumber?: string;
   licensePlate?: string | null;
   status?: BookingStatus;
+  sessionStatus?: SessionStatus | null;
+  totalFee?: number | null;
   lotId: string;
   lotName: string;
   address: string;

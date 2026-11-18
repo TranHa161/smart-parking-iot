@@ -45,6 +45,10 @@ class BookingResponse(BaseModel):
     qr_code_token: Optional[str] = None
     qr_code_base64: Optional[str] = None
     status: BookingStatus
+    session_status: Optional[SessionStatus] = None
+    total_fee: Optional[int] = None
+    time_in: Optional[datetime] = None
+    time_out: Optional[datetime] = None
     created_at: datetime
     expires_at: datetime
     remaining_seconds: int

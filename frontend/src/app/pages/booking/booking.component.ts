@@ -152,10 +152,10 @@ import { AuthService } from '../../services/auth.service';
                   <td style="padding:10px 8px">{{ b.slot_code || ('Slot ' + b.slot_id) }}</td>
                   <td style="padding:10px 8px">{{ b.license_plate || '—' }}</td>
                   <td style="padding:10px 8px">{{ b.created_at | date:'dd/MM/yyyy HH:mm' }}</td>
-                  <td style="padding:10px 8px"><strong>{{ bookingStatusText(b.status) }}</strong></td>
-                  <td style="padding:10px 8px;display:flex;gap:8px;flex-wrap:wrap">
+                  <td style="padding:10px 8px"><strong>{{ bookingStatusText(b) }}</strong></td>
+                  <td style="padding:10px 8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
                     <button
-                      *ngIf="b.status === 'PENDING' || b.status === 'VERIFIED' || b.status === 'CHECKED_IN'"
+                      *ngIf="isBookingActive(b)"
                       pButton
                       type="button"
                       size="small"
@@ -172,6 +172,9 @@ import { AuthService } from '../../services/auth.service';
                       (click)="cancelMyBooking(b.id)">
                       Hủy vé
                     </button>
+                    <span *ngIf="b.session_status === 'EXITED' && b.total_fee" style="font-size:12px;color:var(--muted)">
+                      Đã thu {{ b.total_fee | number }}đ
+                    </span>
                   </td>
                 </tr>
                 <tr *ngIf="myBookings.length === 0">
@@ -292,7 +295,26 @@ export class BookingComponent implements OnInit, OnDestroy {
     }
   }
 
-  bookingStatusText(status: string): string {
+  isBookingActive(b: BookingApiResponse): boolean {
+    if (b.session_status === 'EXITED' || b.session_status === 'CANCELLED') {
+      return false;
+    }
+    return b.status === 'PENDING' || b.status === 'VERIFIED' || b.status === 'CHECKED_IN';
+  }
+
+  bookingStatusText(b: BookingApiResponse): string {
+    if (b.session_status === 'EXITED') {
+      return '🏁 Đã hoàn tất (Đã ra bãi)';
+    }
+    if (b.session_status === 'PAID') {
+      return '✅ Đã thanh toán (Chờ ra cổng)';
+    }
+    if (b.session_status === 'PAYMENT_PENDING') {
+      return '💳 Chờ thanh toán tại cổng ra';
+    }
+    if (b.session_status === 'CANCELLED') {
+      return '🔴 Đã hủy';
+    }
     const map: Record<string, string> = {
       PENDING: '🟡 Chờ quét QR (15p)',
       VERIFIED: '🔵 Đã nhận thẻ RFID',
@@ -300,7 +322,7 @@ export class BookingComponent implements OnInit, OnDestroy {
       EXPIRED: '⚪ Đã hết hạn',
       CANCELLED: '🔴 Đã hủy',
     };
-    return map[status] || status;
+    return map[b.status] || b.status;
   }
 
   openBookingDetail(b: BookingApiResponse): void {

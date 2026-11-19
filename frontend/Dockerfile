@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # ---------- Stage 1: build Angular ----------
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 WORKDIR /app
 # Giới hạn heap Node để không bị OOM trên máy 1 GB RAM (đã có swap 4 GB hỗ trợ)
 ENV NODE_OPTIONS=--max-old-space-size=768
